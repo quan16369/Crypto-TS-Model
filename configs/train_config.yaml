@@ -1,0 +1,27 @@
+data:
+  path: "data/raw/crypto_data.csv"
+  freq: "5min"
+  train_ratio: 0.9
+
+model:
+  enc_in: 10
+  d_model: 128
+  n_heads: 4
+  e_layers: 4
+  d_ff: 256
+  dropout: 0.1
+  pred_len: 10
+  seq_len: 60
+
+training:
+  epochs: 100
+  batch_size: 64
+  lr: 0.001
+  patience: 10
+  min_delta: 0.01
+  device: "cuda"
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+
+metrics:
+  volatility_window: 10
