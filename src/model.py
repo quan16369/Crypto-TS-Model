@@ -20,16 +20,24 @@ class RWKVConfig:
 
 class ModelConfig:
     def __init__(self, config_dict: Dict[str, Any]):
-        self.dropout = config_dict['model'].get('dropout', 0.1)  # Giá trị mặc định 0.1
-        self.enc_in = config_dict['model']['enc_in']
-        self.d_model = config_dict['model']['d_model']
-        self.n_heads = config_dict['model']['n_heads']
-        self.e_layers = config_dict['model']['e_layers']
-        self.patch_size = config_dict['model']['patch_size']
-        self.c_out = config_dict['model']['c_out']
-        self.seq_len = config_dict['model']['seq_len']
-        self.pred_len = config_dict['model']['pred_len']
-
+        model_config = config_dict['model']
+        
+        # Các tham số bắt buộc
+        self.enc_in = model_config['enc_in']
+        self.d_model = model_config['d_model']
+        self.n_heads = model_config['n_heads']
+        self.e_layers = model_config['e_layers']
+        self.patch_size = model_config['patch_size']
+        self.c_out = model_config['c_out']
+        self.seq_len = model_config['seq_len']
+        self.pred_len = model_config['pred_len']
+        
+        # Các tham số có giá trị mặc định
+        self.dropout = model_config.get('dropout', 0.1)
+        self.embed = model_config.get('embed', 'fixed')
+        self.freq = model_config.get('freq', 'h')
+        self.d_ff = model_config.get('d_ff', 2048)
+        
 # --------------------------
 # 2. Layer Normalization
 # --------------------------
