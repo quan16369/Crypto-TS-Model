@@ -34,9 +34,9 @@ class TrainingTracker:
         self.writer.close()
 
 class EarlyStopper:
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any]):  
         self.patience = config['training']['patience']
-        self.min_delta = config['training']['min_delta']
+        self.min_delta = config['training'].get('min_delta', 0.01)
         self.counter = 0
         self.best_loss = float('inf')
 
