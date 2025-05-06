@@ -36,7 +36,7 @@ def evaluate(model, data_loader):
             total_smape += metric_calculator.smape(pred, y).item()  
     return total_smape / len(data_loader)
 
-def train(config_path: str = 'configs/tash.config.yaml'):
+def train(config_path: str = 'configs/train_config.yaml'):
     # 1. Load cấu hình từ file YAML
     with open(config_path) as f:
         config_dict = yaml.safe_load(f)
