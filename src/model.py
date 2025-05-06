@@ -20,6 +20,7 @@ class RWKVConfig:
 
 class ModelConfig:
     def __init__(self, config_dict: Dict[str, Any]):
+        self.dropout = config_dict['model'].get('dropout', 0.1)  # Giá trị mặc định 0.1
         self.enc_in = config_dict['model']['enc_in']
         self.d_model = config_dict['model']['d_model']
         self.n_heads = config_dict['model']['n_heads']
