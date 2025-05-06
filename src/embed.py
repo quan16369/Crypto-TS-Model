@@ -35,9 +35,10 @@ class VolatilityEmbedding(nn.Module):
         return self.proj(volatility)  # [B, T, d_model]
 
 class CryptoTokenEmbedding(nn.Module):
-    def __init__(self, c_in, d_model):
+    def __init__(self, c_in, d_model, patch_size=16):
         super().__init__()
-        self.patch_size = 16  # Thêm patch_size
+        self.c_in = c_in  # Số features đầu vào (13)
+        self.patch_size = patch_size
         self.conv = nn.Sequential(
             nn.Conv1d(c_in, d_model, kernel_size=3, padding=1, padding_mode='circular'),
             nn.GELU(),
@@ -46,21 +47,17 @@ class CryptoTokenEmbedding(nn.Module):
         
     def forward(self, x):
         B, NP, _ = x.shape
-        patch_len = self.patch_size
-        features_per_patch = _.item() // (NP * patch_len)
+        # Tính toán số features mỗi patch (phải bằng c_in)
+        features_per_patch = self.c_in
         
-        try:
-            x = x.view(B, NP, patch_len, features_per_patch)
-            x = x.permute(0, 3, 1, 2)  # [B, C, NP, patch_len]
-            x = x.reshape(B, features_per_patch, -1)  # Combine patches
-            x = self.conv(x)
-            x = x.reshape(B, self.conv[-1].out_channels, NP, -1)
-            x = x.permute(0, 2, 3, 1)  # [B, NP, patch_len, D]
-            return x.reshape(B, NP, -1)
-        except Exception as e:
-            print(f"Reshape error! Input shape: {x.shape}")
-            print(f"Attempting reshape to: [{B}, {NP}, {patch_len}, {features_per_patch}]")
-            raise e
+        # Reshape chính xác
+        x = x.view(B, NP, self.patch_size, features_per_patch)  # [64, 35, 16, 13]
+        x = x.permute(0, 3, 1, 2)  # [B, C, NP, patch_len] -> [64, 13, 35, 16]
+        x = x.reshape(B, features_per_patch, -1)  # [64, 13, 560]
+        x = self.conv(x)  # [64, d_model, 560]
+        x = x.reshape(B, self.conv[-1].out_channels, NP, -1)  # [64, d_model, 35, 16]
+        x = x.permute(0, 2, 3, 1)  # [64, 35, 16, d_model]
+        return x.reshape(B, NP, -1)  # [64, 35, 16*d_model]
 
 class CryptoTimeEmbedding(nn.Module):
     """Tối ưu cho time features trong trading (phút/giờ)"""
