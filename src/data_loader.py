@@ -31,38 +31,51 @@ class CryptoDataset(Dataset):
         # Đọc dữ liệu
         df = pd.read_csv(path)
         
-        print("\nThông tin dữ liệu sau khi xử lý:")
-        print(f"Kích thước dữ liệu: {df.shape}")
-        print(f"Thời gian bắt đầu: {df.index.min()}")
-        print(f"Thời gian kết thúc: {df.index.max()}")
-        print("\n5 dòng đầu tiên:")
-        print(df.head())
-        print("\nThống kê volume:")
-        print(df['volume'].describe())
+        # Debug: In ra các cột thực tế
+        print("Các cột trong file gốc:", df.columns.tolist())
         
-        # Chuẩn hóa tên cột (đổi thành chữ thường)
+        # Chuẩn hóa tên cột (đổi tất cả về chữ thường)
         column_mapping = {
             'timestamp': 'timestamp',
             'Open': 'open',
             'High': 'high',
             'Low': 'low',
             'Close': 'close',
-            'Volume': 'volume'
+            'Volume': 'volume'  # Đảm bảo khớp với tên trong file
         }
-        df = df.rename(columns=column_mapping)
         
-        # Chuyển đổi timestamp (định dạng đã chuẩn)
+        # Chỉ đổi tên các cột tồn tại
+        df = df.rename(columns={k: v for k, v in column_mapping.items() if k in df.columns})
+        
+        # Debug: Kiểm tra sau khi đổi tên
+        print("Các cột sau chuẩn hóa:", df.columns.tolist())
+        
+        # Chuyển đổi timestamp
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         
-        # Xử lý volume = 0 (thay bằng giá trị trung bình lân cận)
-        df['volume'] = df['volume'].replace(0, np.nan)
-        df['volume'] = df['volume'].fillna(df['volume'].rolling(12, min_periods=1).mean())
+        # Xử lý volume nếu cột tồn tại
+        if 'volume' in df.columns:
+            # Thay thế giá trị 0 bằng NaN rồi fill bằng giá trị trung bình
+            df['volume'] = df['volume'].replace(0, np.nan)
+            df['volume'] = df['volume'].fillna(df['volume'].rolling(12, min_periods=1).mean())
+        else:
+            print("Cảnh báo: Không tìm thấy cột volume")
+            # Tạo cột volume mặc định nếu cần
+            df['volume'] = 1.0
         
         # Đặt timestamp làm index và sắp xếp
         df = df.set_index('timestamp').sort_index()
         
-        # Xử lý dữ liệu trùng lặp và missing
+        # Xử lý dữ liệu trùng lặp
         df = df[~df.index.duplicated(keep='first')]
+        
+        # Debug: Kiểm tra kết quả cuối cùng
+        print("\n5 dòng đầu sau xử lý:")
+        print(df.head())
+        print("\nThống kê volume:" if 'volume' in df.columns else "\nKhông có cột volume")
+        if 'volume' in df.columns:
+            print(df['volume'].describe())
+        
         return df.ffill().bfill()
 
     def _add_crypto_features(self, df: pd.DataFrame, freq: str) -> pd.DataFrame:
