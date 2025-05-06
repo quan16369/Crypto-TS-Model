@@ -31,6 +31,15 @@ class CryptoDataset(Dataset):
         # Đọc dữ liệu
         df = pd.read_csv(path)
         
+        print("\nThông tin dữ liệu sau khi xử lý:")
+        print(f"Kích thước dữ liệu: {df.shape}")
+        print(f"Thời gian bắt đầu: {df.index.min()}")
+        print(f"Thời gian kết thúc: {df.index.max()}")
+        print("\n5 dòng đầu tiên:")
+        print(df.head())
+        print("\nThống kê volume:")
+        print(df['volume'].describe())
+        
         # Chuẩn hóa tên cột (đổi thành chữ thường)
         column_mapping = {
             'timestamp': 'timestamp',
