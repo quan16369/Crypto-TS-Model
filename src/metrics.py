@@ -9,7 +9,7 @@ class CryptoMetrics:
     
     def __init__(self, config: Optional[Dict] = None):
         self.config = config or {}
-        self.vol_window = config.get('metrics', {}).get('volatility_window', 10)
+        self.vol_window = config.get('metrics', {}).get('volatility_window', 10) if config else 10
         
     @staticmethod
     def smape(y_true: Union[torch.Tensor, np.ndarray], 
@@ -20,7 +20,7 @@ class CryptoMetrics:
         return 200 * np.mean(
             np.abs(y_pred - y_true) / 
             (np.abs(y_true) + np.abs(y_pred) + 1e-8
-        )
+        ))
 
     def directional_accuracy(self, 
                           y_true: Union[torch.Tensor, np.ndarray],
@@ -48,6 +48,7 @@ class CryptoMetrics:
         returns = np.diff(data, axis=-1)
         return np.sqrt(
             np.convolve(returns**2, np.ones(self.vol_window)/self.vol_window, 'valid')
+        )
 
     def evaluate_all(self,
                    y_true: Union[torch.Tensor, np.ndarray],
