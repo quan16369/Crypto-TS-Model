@@ -37,7 +37,7 @@ class ModelConfig:
         self.embed = model_config.get('embed', 'fixed')
         self.freq = model_config.get('freq', 'h')
         self.d_ff = model_config.get('d_ff', 2048)
-        
+
 # --------------------------
 # 2. Layer Normalization
 # --------------------------
@@ -224,14 +224,15 @@ class CryptoRWKV_TS(nn.Module):
             patch_size=self.configs.patch_size,
             stride=self.configs.patch_size // 2  # 50% overlap
         )
-        self.num_patches = (self.configs.seq_len - self.configs.patch_size) // (self.configs.patch_size // 2) + 1
+        self.num_patches = (self.configs.seq_len + self.configs.patch_size - 1) // (self.configs.patch_size // 2)
         
         # Embedding
         self.embedding = CryptoDataEmbedding(
-            self.configs.enc_in * self.configs.patch_size,
-            self.configs.d_model,
-            self.configs.dropout
+            c_in=self.configs.enc_in * self.configs.patch_size, 
+            d_model=self.configs.d_model,
+            dropout=self.configs.dropout
         )
+        
         
         # RWKV Blocks
         rwkv_config = RWKVConfig(
@@ -285,7 +286,7 @@ class CryptoRWKV_TS(nn.Module):
         x_norm = (x_enc - median) / (mad + 1e-6)
         
         # Patching
-        x_patched = self.patching(x_norm)
+        x_patched = self.patching(x_enc)  # [B, num_patches, patch_size * M]
         volatility = self.compute_volatility(x_patched) if hasattr(self, 'compute_volatility') else None
         
         # Embedding
