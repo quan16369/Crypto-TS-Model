@@ -76,7 +76,11 @@ class CryptoDataEmbedding(nn.Module):
     def __init__(self, c_in, d_model, dropout=0.1):
         super().__init__()
         # 1. Embedding giá OHLCV
-        self.token_embedding = CryptoTokenEmbedding(c_in, d_model)
+        self.token_embedding = CryptoTokenEmbedding(
+            c_in=c_in,  # 13 features
+            d_model=d_model,
+            patch_size=16  # Thêm patch_size
+        )
         
         # 2. Embedding biến động (volatility)
         self.volatility_embedding = VolatilityEmbedding(d_model)
