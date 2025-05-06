@@ -58,12 +58,13 @@ class Patching(nn.Module):
         super().__init__()
         self.patch_size = patch_size
         self.stride = stride
-        self.padding = nn.ReplicationPad1d((0, stride))
 
     def forward(self, x):
         B, L, M = x.shape
+        num_patches = (L - self.patch_size) // self.stride + 1
+        print(f"Expected patches: {num_patches}")
+        
         x = x.permute(0, 2, 1)
-        x = self.padding(x) if L % self.stride != 0 else x
         x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride)
         x = x.permute(0, 2, 3, 1).reshape(B, -1, self.patch_size * M)
         return x
@@ -283,7 +284,8 @@ class CryptoRWKV_TS(nn.Module):
     def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
         B, L, M = x_enc.shape
         print(f"Input shape: {x_enc.shape}")  # Debug
-        
+        assert M == self.configs.enc_in, \
+            f"Input features {M} không khớp với config enc_in {self.configs.enc_in}"
         # Normalization
         median = x_enc.median(dim=1, keepdim=True).values
         mad = torch.median(torch.abs(x_enc - median), dim=1, keepdim=True).values
