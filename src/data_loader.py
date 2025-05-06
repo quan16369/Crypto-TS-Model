@@ -28,23 +28,30 @@ class CryptoDataset(Dataset):
         self._fit_scaler()
 
     def _load_and_clean(self, path: str) -> pd.DataFrame:
-        # Đọc dữ liệu Binance và chuẩn hóa tên cột
+        # Đọc dữ liệu từ file CSV
         df = pd.read_csv(path)
-        df = df.rename(columns={
-            'Open time': 'timestamp',
+        
+        # Kiểm tra và chuẩn hóa tên cột
+        column_mapping = {
+            'timestamp': 'timestamp',
             'Open': 'open',
             'High': 'high',
             'Low': 'low',
             'Close': 'close',
             'Volume': 'volume'
-        })
+        }
+        df = df.rename(columns=column_mapping)
         
-        # Chuyển timestamp từ miligiây sang datetime
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        # Chuyển đổi timestamp (định dạng trong hình đã là datetime nên không cần unit='ms')
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
         
-        # Chọn các cột cần thiết và đặt timestamp làm index
+        # Chọn các cột cần thiết
         keep_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
         df = df[keep_cols].set_index('timestamp').sort_index()
+        
+        # Xử lý giá trị volume = 0 (thay bằng giá trị trung bình)
+        df['volume'] = df['volume'].replace(0, np.nan)
+        df['volume'] = df['volume'].fillna(df['volume'].rolling(12, min_periods=1).mean())
         
         # Xử lý giá trị thiếu và trùng lặp
         df = df[~df.index.duplicated(keep='first')]
