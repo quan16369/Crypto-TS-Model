@@ -37,6 +37,7 @@ class VolatilityEmbedding(nn.Module):
 class CryptoTokenEmbedding(nn.Module):
     def __init__(self, c_in, d_model):
         super().__init__()
+        self.patch_size = 16  # Thêm patch_size
         self.conv = nn.Sequential(
             nn.Conv1d(c_in, d_model, kernel_size=3, padding=1, padding_mode='circular'),
             nn.GELU(),
@@ -45,16 +46,21 @@ class CryptoTokenEmbedding(nn.Module):
         
     def forward(self, x):
         B, NP, _ = x.shape
-        # Tính toán features_per_patch chính xác
-        features_per_patch = x.shape[-1] // NP
+        patch_len = self.patch_size
+        features_per_patch = _.item() // (NP * patch_len)
         
-        x = x.view(B, NP, -1, features_per_patch)  # Unflatten patches
-        x = x.permute(0, 3, 1, 2)  # [B, C, NP, patch_len]
-        x = x.reshape(B, features_per_patch, -1)  # Combine patches
-        x = self.conv(x)
-        x = x.reshape(B, self.conv[-1].out_channels, NP, -1)
-        x = x.permute(0, 2, 3, 1)  # [B, NP, patch_len, D]
-        return x.reshape(B, NP, -1)
+        try:
+            x = x.view(B, NP, patch_len, features_per_patch)
+            x = x.permute(0, 3, 1, 2)  # [B, C, NP, patch_len]
+            x = x.reshape(B, features_per_patch, -1)  # Combine patches
+            x = self.conv(x)
+            x = x.reshape(B, self.conv[-1].out_channels, NP, -1)
+            x = x.permute(0, 2, 3, 1)  # [B, NP, patch_len, D]
+            return x.reshape(B, NP, -1)
+        except Exception as e:
+            print(f"Reshape error! Input shape: {x.shape}")
+            print(f"Attempting reshape to: [{B}, {NP}, {patch_len}, {features_per_patch}]")
+            raise e
 
 class CryptoTimeEmbedding(nn.Module):
     """Tối ưu cho time features trong trading (phút/giờ)"""
