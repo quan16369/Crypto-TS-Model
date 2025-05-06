@@ -28,10 +28,10 @@ class CryptoDataset(Dataset):
         self._fit_scaler()
 
     def _load_and_clean(self, path: str) -> pd.DataFrame:
-        # Đọc dữ liệu từ file CSV
+        # Đọc dữ liệu
         df = pd.read_csv(path)
         
-        # Kiểm tra và chuẩn hóa tên cột
+        # Chuẩn hóa tên cột (đổi thành chữ thường)
         column_mapping = {
             'timestamp': 'timestamp',
             'Open': 'open',
@@ -42,18 +42,17 @@ class CryptoDataset(Dataset):
         }
         df = df.rename(columns=column_mapping)
         
-        # Chuyển đổi timestamp (định dạng trong hình đã là datetime nên không cần unit='ms')
+        # Chuyển đổi timestamp (định dạng đã chuẩn)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         
-        # Chọn các cột cần thiết
-        keep_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-        df = df[keep_cols].set_index('timestamp').sort_index()
-        
-        # Xử lý giá trị volume = 0 (thay bằng giá trị trung bình)
+        # Xử lý volume = 0 (thay bằng giá trị trung bình lân cận)
         df['volume'] = df['volume'].replace(0, np.nan)
         df['volume'] = df['volume'].fillna(df['volume'].rolling(12, min_periods=1).mean())
         
-        # Xử lý giá trị thiếu và trùng lặp
+        # Đặt timestamp làm index và sắp xếp
+        df = df.set_index('timestamp').sort_index()
+        
+        # Xử lý dữ liệu trùng lặp và missing
         df = df[~df.index.duplicated(keep='first')]
         return df.ffill().bfill()
 
