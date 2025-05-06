@@ -60,7 +60,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
     
     model = CryptoRWKV_TS(config_dict).to(config.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
-    stopper = EarlyStopper(patience=config_dict['training'].get('patience', 10))
+    stopper = EarlyStopper(config_dict)
     
     # 4. Vòng lặp training
     best_loss = float('inf')
@@ -107,7 +107,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
                 'config': config_dict,
                 'best_loss': best_loss
             }, f"{config.checkpoint_dir}/{timestamp}/best_model.pt")
-            print(f"New best model (loss={best_loss:.4f})")
+            print(f"🔥 New best model (loss={best_loss:.4f})")
         
         # 8. Early stopping
         if stopper.check(avg_loss):
