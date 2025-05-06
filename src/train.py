@@ -9,6 +9,11 @@ from utils import TrainingTracker, EarlyStopper
 from metrics import CryptoMetrics 
 import torch.nn.functional as F
 from typing import Dict, Any, Optional, Union, Tuple 
+import warnings
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 class TrainConfig:
     def __init__(self, config_dict: Dict[str, Any]):
