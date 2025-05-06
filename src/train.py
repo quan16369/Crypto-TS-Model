@@ -102,7 +102,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
                 'config': config_dict,
                 'best_loss': best_loss
             }, f"{config.checkpoint_dir}/{timestamp}/best_model.pt")
-            print(f"🔥 New best model (loss={best_loss:.4f})")
+            print(f"New best model (loss={best_loss:.4f})")
         
         # 8. Early stopping
         if stopper.check(avg_loss):
