@@ -35,7 +35,6 @@ class VolatilityEmbedding(nn.Module):
         return self.proj(volatility)  # [B, T, d_model]
 
 class CryptoTokenEmbedding(nn.Module):
-    """Phiên bản mở rộng của TokenEmbedding cho dữ liệu OHLCV"""
     def __init__(self, c_in, d_model):
         super().__init__()
         self.conv = nn.Sequential(
@@ -45,8 +44,15 @@ class CryptoTokenEmbedding(nn.Module):
         )
         
     def forward(self, x):
-        x = self.conv(x.permute(0, 2, 1)).transpose(1, 2)
-        return x
+        # x shape: [B, num_patches, patch_size * num_features]
+        B, NP, _ = x.shape
+        x = x.view(B, NP, -1, self.conv[0].in_channels)  # Unflatten patches
+        x = x.permute(0, 3, 1, 2)  # [B, C, NP, patch_len]
+        x = x.reshape(B, self.conv[0].in_channels, -1)  # Combine patches
+        x = self.conv(x)  # [B, D, NP*patch_len]
+        x = x.reshape(B, self.conv[-1].out_channels, NP, -1)
+        x = x.permute(0, 2, 3, 1)  # [B, NP, patch_len, D]
+        return x.reshape(B, NP, -1)  # [B, NP, patch_len*D]
 
 class CryptoTimeEmbedding(nn.Module):
     """Tối ưu cho time features trong trading (phút/giờ)"""
