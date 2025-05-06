@@ -44,15 +44,18 @@ class CryptoTokenEmbedding(nn.Module):
         )
         
     def forward(self, x):
-        # x shape: [B, num_patches, patch_size * num_features]
         B, NP, _ = x.shape
-        x = x.view(B, NP, -1, self.conv[0].in_channels)  # Unflatten patches
+        # Calculate expected features per patch
+        features_per_patch = _ // NP if _ % NP == 0 else _ // (NP - 1)
+        
+        # Reshape with calculated features
+        x = x.view(B, NP, -1, features_per_patch)  # Unflatten patches
         x = x.permute(0, 3, 1, 2)  # [B, C, NP, patch_len]
-        x = x.reshape(B, self.conv[0].in_channels, -1)  # Combine patches
-        x = self.conv(x)  # [B, D, NP*patch_len]
+        x = x.reshape(B, features_per_patch, -1)  # Combine patches
+        x = self.conv(x)
         x = x.reshape(B, self.conv[-1].out_channels, NP, -1)
         x = x.permute(0, 2, 3, 1)  # [B, NP, patch_len, D]
-        return x.reshape(B, NP, -1)  # [B, NP, patch_len*D]
+        return x.reshape(B, NP, -1)
 
 class CryptoTimeEmbedding(nn.Module):
     """Tối ưu cho time features trong trading (phút/giờ)"""
