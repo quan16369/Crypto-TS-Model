@@ -60,16 +60,20 @@ class CryptoTokenEmbedding(nn.Module):
         return x.reshape(B, NP, -1)  # [64, 35, 16*d_model]
 
 class CryptoTimeEmbedding(nn.Module):
-    """Tối ưu cho time features trong trading (phút/giờ)"""
     def __init__(self, d_model):
         super().__init__()
-        self.minute_embed = nn.Embedding(60, d_model)  # 60 phút
-        self.hour_embed = nn.Embedding(24, d_model)   # 24 giờ
+        self.minute_embed = nn.Embedding(60, d_model)
+        self.hour_embed = nn.Embedding(24, d_model)
         
     def forward(self, x_mark):
-        minute_x = self.minute_embed(x_mark[..., 4].long())  # Phút
-        hour_x = self.hour_embed(x_mark[..., 3].long())     # Giờ
-        return minute_x + hour_x
+        # Sử dụng chỉ số an toàn
+        minute_idx = min(3, x_mark.size(-1)-1)  # Lấy chiều cuối cùng nếu không đủ
+        hour_idx = min(2, x_mark.size(-1)-1)
+        
+        minutes = (x_mark[..., minute_idx] * 59).long()  # Chuyển từ [0-1] về phút thực
+        hours = (x_mark[..., hour_idx] * 23).long()      # Chuyển từ [0-1] về giờ thực
+        
+        return self.minute_embed(minutes) + self.hour_embed(hours)
 
 class CryptoDataEmbedding(nn.Module):
     """Embedding tổng hợp tối ưu cho crypto"""
