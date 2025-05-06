@@ -219,16 +219,19 @@ class CryptoRWKV_TS(nn.Module):
         super().__init__()
         self.configs = ModelConfig(config)
         
+        # Calculate number of patches 
+        self.num_patches = ((self.configs.seq_len - self.configs.patch_size) // 
+                       (self.configs.patch_size // 2)) + 1
+    
         # Patching
         self.patching = Patching(
             patch_size=self.configs.patch_size,
-            stride=self.configs.patch_size // 2  # 50% overlap
+            stride=self.configs.patch_size // 2 
         )
-        self.num_patches = (self.configs.seq_len + self.configs.patch_size - 1) // (self.configs.patch_size // 2)
         
         # Embedding
         self.embedding = CryptoDataEmbedding(
-            c_in=self.configs.enc_in * self.configs.patch_size, 
+            c_in=self.configs.enc_in,  
             d_model=self.configs.d_model,
             dropout=self.configs.dropout
         )
