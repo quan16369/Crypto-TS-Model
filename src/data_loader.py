@@ -4,10 +4,9 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import RobustScaler
 import ta
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Dict, Any
 import yaml
 from pathlib import Path
-from typing import Dict, Any, Optional, Union, Tuple 
 
 class CryptoDataset(Dataset):
     def __init__(self, 
@@ -29,40 +28,84 @@ class CryptoDataset(Dataset):
         self._fit_scaler()
 
     def _load_and_clean(self, path: str) -> pd.DataFrame:
+        # Đọc dữ liệu Binance và chuẩn hóa tên cột
         df = pd.read_csv(path)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.set_index('timestamp').sort_index()
+        df = df.rename(columns={
+            'Open time': 'timestamp',
+            'Open': 'open',
+            'High': 'high',
+            'Low': 'low',
+            'Close': 'close',
+            'Volume': 'volume'
+        })
+        
+        # Chuyển timestamp từ miligiây sang datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        
+        # Chọn các cột cần thiết và đặt timestamp làm index
+        keep_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        df = df[keep_cols].set_index('timestamp').sort_index()
+        
+        # Xử lý giá trị thiếu và trùng lặp
+        df = df[~df.index.duplicated(keep='first')]
         return df.ffill().bfill()
 
     def _add_crypto_features(self, df: pd.DataFrame, freq: str) -> pd.DataFrame:
-        ohlc_dict = {
-            'open': 'first',
-            'high': 'max',
-            'low': 'min',
-            'close': 'last',
-            'volume': 'sum'
-        }
-        df = df.resample(freq).apply(ohlc_dict).dropna()
+        # Resample dữ liệu nếu cần (giữ nguyên khung 5 phút)
+        if freq != '5T':
+            ohlc_dict = {
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last',
+                'volume': 'sum'
+            }
+            df = df.resample(freq).apply(ohlc_dict).dropna()
         
-        # Thêm các indicators
+        # Thêm các technical indicators tối ưu cho khung 5 phút
         df['returns'] = df['close'].pct_change()
-        df['volatility'] = df['returns'].rolling(10).std()
-        df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
-        df['macd'] = ta.trend.MACD(df['close']).macd_diff()
+        df['volatility'] = df['returns'].rolling(12).std()  # Biến động 1 giờ (12*5phút)
+        
+        # RSI với tham số ngắn hơn phù hợp khung 5 phút
+        df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=10).rsi()
+        
+        # MACD với tham số tối ưu
+        df['macd'] = ta.trend.MACD(df['close'], window_slow=26, window_fast=12, window_sign=9).macd_diff()
+        
+        # Volume-based features
+        df['volume_ma'] = df['volume'].rolling(12).mean()  # MA 1 giờ
         df['obv'] = ta.volume.OnBalanceVolumeIndicator(df['close'], df['volume']).on_balance_volume()
-        df['bid_ask_spread'] = (df['high'] - df['low']) / df['close']
+        
+        # Price spread và liquidity
+        df['price_spread'] = (df['high'] - df['low']) / df['close']
         df['liquidity'] = df['volume'] * df['close']
+        
+        # Thêm features từ dữ liệu gốc của Binance nếu có
+        if 'Taker buy base asset volume' in df.columns:
+            df['buy_ratio'] = df['Taker buy base asset volume'] / df['volume']
         
         return df.dropna()
 
+    def _fit_scaler(self):
+        """Fit scaler trên training data"""
+        if self.train:
+            self.scaler.fit(self.data.values)
+        self.scaled_data = self.scaler.transform(self.data.values)
+
+    def __len__(self):
+        return len(self.data) - self.seq_len - self.pred_len + 1
+
     def __getitem__(self, idx: int) -> dict:
         x = self.scaled_data[idx:idx+self.seq_len]
-        y = self.scaled_data[idx+self.seq_len:idx+self.seq_len+self.pred_len, 3]
+        y = self.scaled_data[idx+self.seq_len:idx+self.seq_len+self.pred_len, 3]  # Chỉ lấy cột close
         
+        # Thêm features thời gian chi tiết
         timestamps = self.data.index[idx:idx+self.seq_len]
         time_features = np.column_stack([
             timestamps.minute.values / 59.0,
-            timestamps.hour.values / 23.0
+            timestamps.hour.values / 23.0,
+            timestamps.dayofweek.values / 6.0,  # Ngày trong tuần
+            (timestamps.hour * 60 + timestamps.minute) / 1439.0  # Phút trong ngày
         ])
         
         return {
@@ -103,6 +146,6 @@ class CryptoDataLoader:
             dataset,
             batch_size=self.batch_size,
             shuffle=shuffle,
-            num_workers=1,
-            pin_memory=True
+            num_workers=1, 
+            pin_memory=True if torch.cuda.is_available() else False
         )
