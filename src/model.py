@@ -282,6 +282,7 @@ class CryptoRWKV_TS(nn.Module):
 
     def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
         B, L, M = x_enc.shape
+        print(f"Input shape: {x_enc.shape}")  # Debug
         
         # Normalization
         median = x_enc.median(dim=1, keepdim=True).values
@@ -290,7 +291,12 @@ class CryptoRWKV_TS(nn.Module):
         
         # Patching
         x_patched = self.patching(x_enc)  # [B, num_patches, patch_size * M]
+        print(f"Patched shape: {x_patched.shape}")  # Debug
         volatility = self.compute_volatility(x_patched) if hasattr(self, 'compute_volatility') else None
+        
+        # features per patch
+        features_per_patch = x_patched.shape[-1] // self.configs.patch_size
+        print(f"Features per patch: {features_per_patch}")  # Debug
         
         # Embedding
         x = self.embedding(x_patched, x_mark_enc)
