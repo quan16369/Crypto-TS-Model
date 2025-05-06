@@ -34,16 +34,13 @@ class TrainingTracker:
         self.writer.close()
 
 class EarlyStopper:
-    """Xử lý early stopping"""
-    
-    def __init__(self, config: Dict[str, Any]):  
-        self.patience = config['training']['patience']  
+    def __init__(self, config: Dict[str, Any]):
+        self.patience = config['training']['patience']
         self.min_delta = config['training']['min_delta']
         self.counter = 0
         self.best_loss = float('inf')
 
     def check(self, current_loss: float) -> bool:
-        """Kiểm tra điều kiện dừng"""
         if current_loss < self.best_loss - self.min_delta:
             self.best_loss = current_loss
             self.counter = 0
