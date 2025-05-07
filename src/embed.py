@@ -23,15 +23,16 @@ class PositionalEmbedding(nn.Module):
         return self.pe[:, :x.size(1)]
 
 class VolatilityEmbedding(nn.Module):
-    """Bổ sung embedding cho biến động giá (đặc biệt quan trọng với crypto)"""
     def __init__(self, d_model, lookback=10):
         super().__init__()
         self.lookback = lookback
         self.proj = nn.Linear(1, d_model)
         
-    def forward(self, x_close):  # x_close: [B, T, 1] (close price)
+    def forward(self, x_close):  # x_close: [B, T, 1]
         returns = x_close.diff(dim=1).abs()  # Absolute returns
-        volatility = returns.unfold(1, self.lookback, 1).std(dim=-1, keepdim=True)  # [B, T, 1]
+        # Sửa đổi để đảm bảo kích thước đầu ra
+        volatility = returns.unfold(1, self.lookback, 1).std(dim=-1, keepdim=True)  # [B, T', 1]
+        volatility = F.pad(volatility, (0,0,0,x_close.size(1)-volatility.size(1)))
         return self.proj(volatility)  # [B, T, d_model]
 
 class CryptoTokenEmbedding(nn.Module):
@@ -82,27 +83,23 @@ class CryptoDataEmbedding(nn.Module):
         # 1. Embed giá trị
         x_embed = self.token_embedding(x)  # [B, T, D]
         
-        # 2. Tính toán volatility từ close price
+        # 2. Tính toán volatility
         volatility = self.volatility_embedding(x[:, :, -1:])  # [B, T, D]
         
-        # 3. Time embedding (nếu có)
-        if x_mark is not None:
-            time_embed = self.time_embedding(x_mark)  # [B, T, D]
-            # Đảm bảo time_embed có cùng kích thước
-            if time_embed.dim() == 2:
-                time_embed = time_embed.unsqueeze(1).expand_as(x_embed)
-            elif time_embed.shape[1] != x_embed.shape[1]:
-                time_embed = time_embed[:, :x_embed.shape[1], :]
-        else:
-            time_embed = 0
+        # 3. Time embedding
+        time_embed = self.time_embedding(x_mark) if x_mark is not None else 0
         
         # 4. Positional embedding
-        pos_embed = self.position_embedding(x)  # [1, T, D]
-        if pos_embed.shape[1] != x_embed.shape[1]:
-            pos_embed = pos_embed[:, :x_embed.shape[1], :]
+        pos_embed = self.position_embedding(x)
         
-        # 5. Tổng hợp với gate điều chỉnh
-        gate = torch.sigmoid(self.volatility_gate(volatility))
+        # 5. Đảm bảo tất cả cùng kích thước
+        if isinstance(time_embed, torch.Tensor):
+            time_embed = time_embed[:, :x_embed.size(1), :]
+        pos_embed = pos_embed[:, :x_embed.size(1), :]
+        volatility = volatility[:, :x_embed.size(1), :]
+        
+        # 6. Tính gate và output
+        gate = torch.sigmoid(self.volatility_gate(volatility))  # [B, T, D]
         out = (x_embed + time_embed + pos_embed) * gate + volatility
         
         return self.dropout(out)
