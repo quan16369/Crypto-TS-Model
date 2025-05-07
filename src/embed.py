@@ -41,10 +41,10 @@ class VolatilityEmbedding(nn.Module):
         # 2. Tính rolling volatility
         volatility = returns.unfold(1, self.lookback, 1).std(dim=-1, keepdim=True)  # [B,T-lookback+1,1]
         
-        # 3. Padding đối xứng chính xác
+        # 3. Padding đối xứng chính xác để giữ nguyên kích thước
         pad_front = (self.lookback - 1) // 2
-        pad_back = (self.lookback - 1) - pad_front
-        volatility = F.pad(volatility, (0,0,pad_front,pad_back), value=0)  # [B,T,1]
+        pad_back = (self.lookback - 1) // 2
+        volatility = F.pad(volatility, (0,0,pad_front,pad_back), mode='replicate')  # [B,T,1]
         
         # 4. Project cuối cùng
         return self.proj(volatility)  # [B,T,D]
@@ -130,9 +130,6 @@ class CryptoDataEmbedding(nn.Module):
     def forward(self, x, x_mark=None):
         B, T, _ = x.shape
         
-        # Debug trước khi tính toán
-        print(f"Input shapes - x: {x.shape}, x_mark: {x_mark.shape if x_mark is not None else None}")
-        
         # 1. Token Embedding
         x_embed = self.token_embedding(x)  # [B,T,D]
         
@@ -149,11 +146,6 @@ class CryptoDataEmbedding(nn.Module):
         
         # 4. Positional Embedding
         pos_embed = self.position_embedding(x)[:, :T, :]  # [1,T,D]
-        
-        # Debug sau khi có tất cả embeddings
-        print(f"Embed shapes - x_embed: {x_embed.shape}, volatility: {volatility.shape}, "
-              f"time_embed: {time_embed.shape if isinstance(time_embed, torch.Tensor) else None}, "
-              f"pos_embed: {pos_embed.shape}")
         
         # 5. Tính toán output
         gate = torch.sigmoid(self.volatility_gate(volatility))
