@@ -45,22 +45,16 @@ class VolatilityEmbedding(nn.Module):
         return self.proj(volatility)  # [B,T,d_model]
     
 class CryptoTokenEmbedding(nn.Module):
-    def __init__(self, c_in, d_model):
+    def __init__(self, c_in, d_model, patch_size):
         super().__init__()
-        self.projection = nn.Linear(c_in * 16, d_model)  # Project to d_model
-        self.conv = nn.Sequential(
-            nn.Conv1d(d_model, d_model, kernel_size=3, padding=1, padding_mode='circular'),
-            nn.GELU(),
-            nn.Conv1d(d_model, d_model, kernel_size=3, padding=1, padding_mode='circular')
+        self.projection = nn.Sequential(
+            nn.Linear(patch_size * c_in, d_model),  
+            nn.LayerNorm(d_model),
+            nn.GELU()
         )
         
     def forward(self, x):
-        B, NP, _ = x.shape
-        # Project to d_model dimension first
-        x = self.projection(x)  # [B, NP, d_model]
-        x = x.permute(0, 2, 1)  # [B, d_model, NP]
-        x = self.conv(x)  # [B, d_model, NP]
-        return x.permute(0, 2, 1)  # [B, NP, d_model]
+        return self.projection(x)
 
 class CryptoTimeEmbedding(nn.Module):
     def __init__(self, d_model):
@@ -85,9 +79,11 @@ class CryptoDataEmbedding(nn.Module):
         self.patch_size = patch_size
         
         # Token embedding
-        self.token_embedding = nn.Sequential(
-            nn.Linear(patch_size * c_in, d_model),
-            nn.LayerNorm(d_model))
+        self.token_embedding = CryptoTokenEmbedding(
+            c_in=c_in,  
+            d_model=d_model,
+            patch_size=patch_size
+        )
         
         # Volatility embedding
         self.volatility_embedding = VolatilityEmbedding(d_model, lookback)
