@@ -289,7 +289,7 @@ class CryptoRWKV_TS(nn.Module):
         
         # Patching
         x_patched = self.patching(x_norm)  # [B, num_patches, patch_size * M]
-        volatility = self.compute_volatility(x_patched) if volatility is not None else None
+        volatility = self.compute_volatility(x_patched)  # Tính toán volatility trực tiếp
         
         # Embedding
         x = self.embedding(x_patched, x_mark_enc)
