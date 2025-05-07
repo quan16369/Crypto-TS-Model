@@ -66,14 +66,14 @@ class CryptoTimeEmbedding(nn.Module):
         self.hour_embed = nn.Embedding(24, d_model)
         
     def forward(self, x_mark):
-        # Sử dụng chỉ số an toàn
-        minute_idx = min(3, x_mark.size(-1)-1)  # Lấy chiều cuối cùng nếu không đủ
-        hour_idx = min(2, x_mark.size(-1)-1)
-        
-        minutes = (x_mark[..., minute_idx] * 59).long()  # Chuyển từ [0-1] về phút thực
-        hours = (x_mark[..., hour_idx] * 23).long()      # Chuyển từ [0-1] về giờ thực
-        
-        return self.minute_embed(minutes) + self.hour_embed(hours)
+        # Lấy sample tương ứng với các patches
+        if x_mark.size(1) > 35:  # Nếu sequence dài hơn số patches
+            indices = torch.linspace(0, x_mark.size(1)-1, 35).long()
+            x_mark = x_mark[:, indices, :]
+            
+        minute_x = self.minute_embed(x_mark[..., 0].long())  # Phút
+        hour_x = self.hour_embed(x_mark[..., 1].long())      # Giờ
+        return minute_x + hour_x  # [B, 35, D]
 
 class CryptoDataEmbedding(nn.Module):
     def __init__(self, c_in, d_model, patch_size=16, lookback=11, dropout=0.1): 
@@ -107,19 +107,16 @@ class CryptoDataEmbedding(nn.Module):
         # 1. Token embedding
         x_embed = self.token_embedding(x)  # [B, 35, D]
         
-        # 2. Volatility embedding (đã sửa)
+        # 2. Volatility embedding
         volatility = self.volatility_embedding(x[:, :, -1:])  # [B, 35, D]
         
-        # 3. Time embedding
-        if x_mark is not None:
-            time_embed = self.time_embedding(x_mark)  # [B, 35, D]
-        else:
-            time_embed = 0
+        # 3. Time embedding (đã được sửa)
+        time_embed = self.time_embedding(x_mark) if x_mark is not None else 0  # [B, 35, D]
         
         # 4. Positional embedding
         pos_embed = self.position_embedding(x)[:, :T, :]  # [1, 35, D]
         
-        # 5. Kiểm tra kích thước CUỐI CÙNG
+        # 5. Kiểm tra kích thước
         print(f"Final shapes - x_embed: {x_embed.shape}, volatility: {volatility.shape}, "
             f"time_embed: {time_embed.shape if isinstance(time_embed, torch.Tensor) else 'scalar'}, "
             f"pos_embed: {pos_embed.shape}")
