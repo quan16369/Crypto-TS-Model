@@ -62,12 +62,8 @@ class Patching(nn.Module):
     def forward(self, x):
         B, L, M = x.shape
         num_patches = (L - self.patch_size) // self.stride + 1
-        print(f"Expected patches: {num_patches}")
-        
-        x = x.permute(0, 2, 1)
-        x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride)
-        x = x.permute(0, 2, 3, 1).reshape(B, -1, self.patch_size * M)
-        return x
+        x = x.unfold(1, self.patch_size, self.stride)  # [B, num_patches, patch_size, M]
+        return x.reshape(B, num_patches, -1)  # [B, num_patches, patch_size*M]
 
 # --------------------------
 # 4. Time Mixing Module
