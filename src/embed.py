@@ -23,7 +23,7 @@ class PositionalEmbedding(nn.Module):
         return self.pe[:, :x.size(1)]
 
 class VolatilityEmbedding(nn.Module):
-    def __init__(self, d_model, lookback=11):
+    def __init__(self, d_model, lookback=11):  # BẮT BUỘC dùng số lẻ
         super().__init__()
         self.lookback = lookback
         self.proj = nn.Sequential(
@@ -34,15 +34,17 @@ class VolatilityEmbedding(nn.Module):
     def forward(self, x_close):  # x_close: [B, T, 1]
         B, T, _ = x_close.shape
         
-        # 1. Tính returns với padding ban đầu
-        returns = F.pad(x_close.diff(dim=1).abs(), (0,0,1,0), value=0)  # [B, T, 1]
+        # Bước 1: Tính returns với padding
+        returns = x_close.diff(dim=1).abs()  # [B, T-1, 1]
+        returns = F.pad(returns, (0,0,1,0), value=0)  # [B, T, 1]
         
-        # 2. Tính rolling volatility với padding đầy đủ
+        # Bước 2: Tính rolling volatility với padding ĐỐI XỨNG
         volatility = returns.unfold(1, self.lookback, 1).std(dim=-1, keepdim=True)  # [B, T-lookback+1, 1]
         
-        # 3. Padding đối xứng để giữ nguyên sequence length
-        pad_front = (self.lookback - 1) // 2
-        pad_back = (self.lookback - 1) - pad_front
+        # Bước 3: Padding chính xác
+        total_pad = T - volatility.size(1)
+        pad_front = total_pad // 2
+        pad_back = total_pad - pad_front
         volatility = F.pad(volatility, (0,0,pad_front,pad_back), value=0)  # [B, T, 1]
         
         return self.proj(volatility)  # [B, T, d_model]
@@ -103,7 +105,11 @@ class CryptoDataEmbedding(nn.Module):
 
     def forward(self, x, x_mark=None):
         B, T, _ = x.shape  # T = 35 (số patches)
-        
+        print(f"SHAPE CHECK - x: {x.shape}, x_mark: {x_mark.shape if x_mark is not None else None}")
+        print(f"volatility: {volatility.shape}, time_embed: {time_embed.shape if isinstance(time_embed, torch.Tensor) else None}")
+
+        assert volatility.shape == (B, T, self.d_model), \
+            f"VOLATILITY SHAPE ERROR: {volatility.shape} != {(B, T, self.d_model)}"
         # 1. Token embedding
         x_embed = self.token_embedding(x)  # [B, 35, D]
         
