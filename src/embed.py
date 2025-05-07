@@ -79,18 +79,28 @@ class CryptoTimeEmbedding(nn.Module):
         return self.minute_embed(minutes) + self.hour_embed(hours)
 
 class CryptoDataEmbedding(nn.Module):
-    def __init__(self, c_in, d_model, patch_size=16, lookback=11):
+    def __init__(self, c_in, d_model, patch_size=16, lookback=11, dropout=0.1): 
         super().__init__()
+        self.d_model = d_model  
         self.patch_size = patch_size
+        
+        # Token embedding
         self.token_embedding = nn.Sequential(
             nn.Linear(patch_size * c_in, d_model),
-            nn.LayerNorm(d_model)
-        )
+            nn.LayerNorm(d_model))
+        
+        # Volatility embedding
         self.volatility_embedding = VolatilityEmbedding(d_model, lookback)
+        
+        # Time embedding
         self.time_embedding = CryptoTimeEmbedding(d_model)
+        
+        # Positional embedding
         self.position_embedding = PositionalEmbedding(d_model)
+        
+        # Gate và dropout
         self.volatility_gate = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(dropout)  
 
     def forward(self, x, x_mark=None):
         B, T, _ = x.shape  # T = số patches (35)
