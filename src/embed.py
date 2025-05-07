@@ -102,6 +102,31 @@ class CryptoDataEmbedding(nn.Module):
         self.volatility_gate = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
 
+class CryptoDataEmbedding(nn.Module):
+    def __init__(self, c_in, d_model, patch_size=16, lookback=11, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.patch_size = patch_size
+        
+        # 1. Token Embedding
+        self.token_embedding = nn.Sequential(
+            nn.Linear(patch_size * c_in, d_model),
+            nn.LayerNorm(d_model)
+        )
+        
+        # 2. Volatility Embedding (ĐÃ SỬA)
+        self.volatility_embedding = VolatilityEmbedding(d_model, lookback)
+        
+        # 3. Time Embedding (ĐÃ SỬA)
+        self.time_embedding = CryptoTimeEmbedding(d_model)
+        
+        # 4. Positional Embedding
+        self.position_embedding = PositionalEmbedding(d_model)
+        
+        # 5. Gate & Dropout
+        self.volatility_gate = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x, x_mark=None):
         B, T, _ = x.shape
         
