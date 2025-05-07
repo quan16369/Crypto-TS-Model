@@ -217,7 +217,7 @@ class CryptoRWKV_TS(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         self.configs = ModelConfig(config)
-        
+        self.num_patches = (self.configs.seq_len - self.configs.patch_size) // (self.configs.patch_size // 2) + 1
         self.patching = Patching(
             patch_size=self.configs.patch_size,
             stride=self.configs.patch_size // 2
@@ -260,16 +260,19 @@ class CryptoRWKV_TS(nn.Module):
         return returns.unfold(1, 10, 1).std(dim=-1)
 
     def _overlap_add(self, patches: torch.Tensor) -> torch.Tensor:
-        B, num_patches, patch_size, C = patches.shape
-        stride = self.configs.patch_size // 2
-        output_len = (num_patches - 1) * stride + patch_size
+        # Thêm reshape để đảm bảo đúng 4 chiều
+        B, T, _ = patches.shape
+        patches = patches.reshape(B, T, self.configs.patch_size, self.configs.c_out)
         
-        output = torch.zeros(B, output_len, C, device=patches.device)
+        stride = self.configs.patch_size // 2
+        output_len = (T - 1) * stride + self.configs.patch_size
+        
+        output = torch.zeros(B, output_len, self.configs.c_out, device=patches.device)
         count = torch.zeros(B, output_len, 1, device=patches.device)
         
-        for i in range(num_patches):
+        for i in range(T):
             start = i * stride
-            end = start + patch_size
+            end = start + self.configs.patch_size
             output[:, start:end] += patches[:, i]
             count[:, start:end] += 1
         
@@ -277,38 +280,32 @@ class CryptoRWKV_TS(nn.Module):
 
     def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
         B, L, M = x_enc.shape
-        print(f"Input shape: {x_enc.shape}")  # Debug
-        assert M == self.configs.enc_in, \
-            f"Input features {M} không khớp với config enc_in {self.configs.enc_in}"
+        assert M == self.configs.enc_in, f"Input features {M} không khớp với config enc_in {self.configs.enc_in}"
+        
         # Normalization
         median = x_enc.median(dim=1, keepdim=True).values
         mad = torch.median(torch.abs(x_enc - median), dim=1, keepdim=True).values
         x_norm = (x_enc - median) / (mad + 1e-6)
         
         # Patching
-        x_patched = self.patching(x_enc)  # [B, num_patches, patch_size * M]
-        print(f"Patched shape: {x_patched.shape}")  # Debug
-        volatility = self.compute_volatility(x_patched) if hasattr(self, 'compute_volatility') else None
-        
-        # features per patch
-        features_per_patch = x_patched.shape[-1] // self.configs.patch_size
-        print(f"Features per patch: {features_per_patch}")  # Debug
+        x_patched = self.patching(x_norm)  # [B, num_patches, patch_size * M]
+        volatility = self.compute_volatility(x_patched) if volatility is not None else None
         
         # Embedding
         x = self.embedding(x_patched, x_mark_enc)
         
-        # Technical Analysis
+        # Technical Analysis (nếu có đủ features)
         if M > 5:
             ta_features = self.ta_encoder(x_enc[:, :, -5:])
-            x = x + ta_features
+            x = x + ta_features[:, :self.num_patches]  # Cắt cho khớp số patches
         
         # RWKV Blocks
         for block in self.blocks:
             x = block(x, volatility)
         
         # Prediction
-        pred_patches = self.predictor(x[:, -self.num_patches:])
+        pred_patches = self.predictor(x)  # [B, num_patches, patch_size * c_out]
         pred = self._overlap_add(pred_patches)
         
-        # Denormalize
-        return pred[:, -self.configs.pred_len:] * mad[:, :, 3:4] + median[:, :, 3:4]
+        # Denormalize (chỉ cho feature thứ 3 - index 2)
+        return pred[:, -self.configs.pred_len:] * mad[:, :, 2:3] + median[:, :, 2:3]
