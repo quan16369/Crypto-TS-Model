@@ -59,11 +59,13 @@ class Patching(nn.Module):
         self.patch_size = patch_size
         self.stride = stride
 
-    def forward(self, x):
-        B, L, M = x.shape
+    def forward(self, x):  # [B,L,C]
+        B, L, C = x.shape
+        # Tính số patches chính xác
         num_patches = (L - self.patch_size) // self.stride + 1
-        x = x.unfold(1, self.patch_size, self.stride)  # [B, num_patches, patch_size, M]
-        return x.reshape(B, num_patches, -1)  # [B, num_patches, patch_size*M]
+        # Tạo patches [B,num_patches,patch_size*C]
+        x = x.unfold(1, self.patch_size, self.stride).reshape(B, num_patches, -1)
+        return x
 
 # --------------------------
 # 4. Time Mixing Module
