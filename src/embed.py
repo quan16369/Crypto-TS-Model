@@ -29,13 +29,13 @@ class VolatilityEmbedding(nn.Module):
         self.proj = nn.Linear(1, d_model)
         
     def forward(self, x_close):  # x_close: [B, T, 1]
-        # Tính toán volatility với kích thước phù hợp
-        returns = x_close.diff(dim=1).abs()  # [B, T-1, 1]
-        volatility = returns.unfold(1, self.lookback, 1).std(dim=-1, keepdim=True)  # [B, T', 1]
+        # Tính toán returns với padding ban đầu
+        returns = F.pad(x_close.diff(dim=1).abs(), (0,0,1,0), value=0)  # [B, T, 1]
         
-        # Padding để đảm bảo kích thước đầu ra
-        pad_size = x_close.size(1) - volatility.size(1)
-        volatility = F.pad(volatility, (0, 0, pad_size, 0), value=0)  # [B, T, 1]
+        # Tính volatility với padding cuối
+        volatility = returns.unfold(1, self.lookback, 1).std(dim=-1, keepdim=True)  # [B, T-lookback+1, 1]
+        volatility = F.pad(volatility, (0,0,0,self.lookback-1), value=0)  # [B, T, 1]
+        
         return self.proj(volatility)  # [B, T, d_model]
     
 class CryptoTokenEmbedding(nn.Module):
@@ -88,23 +88,23 @@ class CryptoDataEmbedding(nn.Module):
         # 1. Token embedding
         x_embed = self.token_embedding(x)  # [B, T, D]
         
-        # 2. Volatility embedding
+        # 2. Volatility embedding (đã được padding)
         volatility = self.volatility_embedding(x[:, :, -1:])  # [B, T, D]
         
         # 3. Time embedding
         time_embed = self.time_embedding(x_mark) if x_mark is not None else 0
         
         # 4. Positional embedding
-        pos_embed = self.position_embedding(x)[:, :T, :]  # Cắt cho khớp kích thước
+        pos_embed = self.position_embedding(x)[:, :T, :]
         
-        # 5. Đảm bảo tất cả cùng kích thước
+        # 5. Kiểm tra và đồng bộ kích thước
         if isinstance(time_embed, torch.Tensor):
             time_embed = time_embed[:, :T, :]
         
-        # 6. Tính gate và output
+        # 6. Tính toán output
         gate = torch.sigmoid(self.volatility_gate(volatility))
         out = (x_embed + time_embed + pos_embed) * gate + volatility
-        
+                
         print(f"Input shape: {x.shape}")
         print(f"Token embed shape: {x_embed.shape}")
         print(f"Volatility shape: {volatility.shape}")
