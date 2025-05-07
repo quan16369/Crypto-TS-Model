@@ -29,12 +29,15 @@ class VolatilityEmbedding(nn.Module):
         self.proj = nn.Linear(1, d_model)
         
     def forward(self, x_close):  # x_close: [B, T, 1]
-        returns = x_close.diff(dim=1).abs()  # Absolute returns
-        # Sửa đổi để đảm bảo kích thước đầu ra
+        # Tính toán volatility với kích thước phù hợp
+        returns = x_close.diff(dim=1).abs()  # [B, T-1, 1]
         volatility = returns.unfold(1, self.lookback, 1).std(dim=-1, keepdim=True)  # [B, T', 1]
-        volatility = F.pad(volatility, (0,0,0,x_close.size(1)-volatility.size(1)))
+        
+        # Padding để đảm bảo kích thước đầu ra
+        pad_size = x_close.size(1) - volatility.size(1)
+        volatility = F.pad(volatility, (0, 0, pad_size, 0), value=0)  # [B, T, 1]
         return self.proj(volatility)  # [B, T, d_model]
-
+    
 class CryptoTokenEmbedding(nn.Module):
     def __init__(self, c_in, d_model):
         super().__init__()
@@ -80,26 +83,32 @@ class CryptoDataEmbedding(nn.Module):
         self.volatility_gate = nn.Linear(d_model, d_model)
 
     def forward(self, x, x_mark=None):
-        # 1. Embed giá trị
+        B, T, _ = x.shape
+        
+        # 1. Token embedding
         x_embed = self.token_embedding(x)  # [B, T, D]
         
-        # 2. Tính toán volatility
+        # 2. Volatility embedding
         volatility = self.volatility_embedding(x[:, :, -1:])  # [B, T, D]
         
         # 3. Time embedding
         time_embed = self.time_embedding(x_mark) if x_mark is not None else 0
         
         # 4. Positional embedding
-        pos_embed = self.position_embedding(x)
+        pos_embed = self.position_embedding(x)[:, :T, :]  # Cắt cho khớp kích thước
         
         # 5. Đảm bảo tất cả cùng kích thước
         if isinstance(time_embed, torch.Tensor):
-            time_embed = time_embed[:, :x_embed.size(1), :]
-        pos_embed = pos_embed[:, :x_embed.size(1), :]
-        volatility = volatility[:, :x_embed.size(1), :]
+            time_embed = time_embed[:, :T, :]
         
         # 6. Tính gate và output
-        gate = torch.sigmoid(self.volatility_gate(volatility))  # [B, T, D]
+        gate = torch.sigmoid(self.volatility_gate(volatility))
         out = (x_embed + time_embed + pos_embed) * gate + volatility
+        
+        print(f"Input shape: {x.shape}")
+        print(f"Token embed shape: {x_embed.shape}")
+        print(f"Volatility shape: {volatility.shape}")
+        print(f"Time embed shape: {time_embed.shape if isinstance(time_embed, torch.Tensor) else 'scalar'}")
+        print(f"Pos embed shape: {pos_embed.shape}")
         
         return self.dropout(out)
