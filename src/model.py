@@ -230,11 +230,12 @@ class CryptoRWKV_TS(nn.Module):
         
         # Embedding
         self.embedding = CryptoDataEmbedding(
-            c_in=self.configs.enc_in,  
+            c_in=self.configs.enc_in * self.configs.patch_size,
             d_model=self.configs.d_model,
-            dropout=self.configs.dropout
+            patch_size=self.configs.patch_size,
+            lookback=config['model'].get('volatility_lookback', 11),  
+            dropout=self.configs.dropout  
         )
-        
         
         # RWKV Blocks
         rwkv_config = RWKVConfig(
