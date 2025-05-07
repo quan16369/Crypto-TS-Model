@@ -34,15 +34,15 @@ class VolatilityEmbedding(nn.Module):
         # Tính returns với padding ban đầu
         returns = F.pad(x_close.diff(dim=1).abs(), (0,0,1,0), value=0)  # [B, T, 1]
         
-        # Tính volatility với padding đối xứng
+        # Tính volatility với padding đầy đủ
         volatility = returns.unfold(1, self.lookback, 1).std(dim=-1, keepdim=True)  # [B, T-lookback+1, 1]
         
         # Padding để đảm bảo output có shape [B, T, 1]
-        pad_front = self.lookback // 2
-        pad_back = self.lookback - pad_front - 1
+        total_pad = T - volatility.size(1)
+        pad_front = total_pad // 2
+        pad_back = total_pad - pad_front
         volatility = F.pad(volatility, (0,0,pad_front,pad_back), value=0)
         
-        # Project lên d_model
         return self.proj(volatility)  # [B, T, d_model]
     
 class CryptoTokenEmbedding(nn.Module):
@@ -95,14 +95,12 @@ class CryptoDataEmbedding(nn.Module):
         # 1. Token embedding
         x_embed = self.token_embedding(x)  # [B, T, D]
         
-        # 2. Volatility embedding
+        # 2. Volatility embedding (đã được sửa)
         volatility = self.volatility_embedding(x[:, :, -1:])  # [B, T, D]
         
-        # 3. Time embedding - lấy mẫu tương ứng patches
+        # 3. Time embedding
         if x_mark is not None:
-            # Tính indices cho các patches
-            patch_indices = torch.linspace(0, x_mark.size(1)-1, T).long()
-            time_embed = self.time_embedding(x_mark[:, patch_indices, :])  # [B, T, D]
+            time_embed = self.time_embedding(x_mark)  # [B, T, D]
         else:
             time_embed = 0
         
