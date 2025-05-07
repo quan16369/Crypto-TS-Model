@@ -35,29 +35,22 @@ class VolatilityEmbedding(nn.Module):
         return self.proj(volatility)  # [B, T, d_model]
 
 class CryptoTokenEmbedding(nn.Module):
-    def __init__(self, c_in, d_model, patch_size=16):
+    def __init__(self, c_in, d_model):
         super().__init__()
-        self.c_in = c_in  # Số features đầu vào (13)
-        self.patch_size = patch_size
+        self.projection = nn.Linear(c_in * 16, d_model)  # Project to d_model
         self.conv = nn.Sequential(
-            nn.Conv1d(c_in, d_model, kernel_size=3, padding=1, padding_mode='circular'),
+            nn.Conv1d(d_model, d_model, kernel_size=3, padding=1, padding_mode='circular'),
             nn.GELU(),
             nn.Conv1d(d_model, d_model, kernel_size=3, padding=1, padding_mode='circular')
         )
         
     def forward(self, x):
         B, NP, _ = x.shape
-        # Tính toán số features mỗi patch (phải bằng c_in)
-        features_per_patch = self.c_in
-        
-        # Reshape chính xác
-        x = x.view(B, NP, self.patch_size, features_per_patch)  # [64, 35, 16, 13]
-        x = x.permute(0, 3, 1, 2)  # [B, C, NP, patch_len] -> [64, 13, 35, 16]
-        x = x.reshape(B, features_per_patch, -1)  # [64, 13, 560]
-        x = self.conv(x)  # [64, d_model, 560]
-        x = x.reshape(B, self.conv[-1].out_channels, NP, -1)  # [64, d_model, 35, 16]
-        x = x.permute(0, 2, 3, 1)  # [64, 35, 16, d_model]
-        return x.reshape(B, NP, -1)  # [64, 35, 16*d_model]
+        # Project to d_model dimension first
+        x = self.projection(x)  # [B, NP, d_model]
+        x = x.permute(0, 2, 1)  # [B, d_model, NP]
+        x = self.conv(x)  # [B, d_model, NP]
+        return x.permute(0, 2, 1)  # [B, NP, d_model]
 
 class CryptoTimeEmbedding(nn.Module):
     def __init__(self, d_model):
