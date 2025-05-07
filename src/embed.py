@@ -23,26 +23,26 @@ class PositionalEmbedding(nn.Module):
         return self.pe[:, :x.size(1)]
 
 class VolatilityEmbedding(nn.Module):
-    def __init__(self, d_model, lookback=11):  # Sử dụng lookback là số lẻ
+    def __init__(self, d_model, lookback=11):
         super().__init__()
         self.lookback = lookback
-        self.proj = nn.Linear(1, d_model)
-        
-    def forward(self, x_close):  # x_close: [B, T, 1]
+        self.proj = nn.Sequential(
+            nn.Linear(1, d_model),
+            nn.LayerNorm(d_model)
+        )
+
+    def forward(self, x_close):  # [B,T,1]
         B, T, _ = x_close.shape
+        returns = x_close.diff(dim=1).abs()  # [B,T-1,1]
         
-        # 1. Tính returns với padding ban đầu
-        returns = F.pad(x_close.diff(dim=1).abs(), (0,0,1,0), value=0)  # [B, T, 1]
+        # Padding để giữ nguyên T
+        returns = F.pad(returns, (0,0,1,0), value=0)  # [B,T,1]
         
-        # 2. Tính volatility với padding đối xứng
-        volatility = returns.unfold(1, self.lookback, 1).std(dim=-1, keepdim=True)  # [B, T-lookback+1, 1]
+        # Tính rolling volatility với padding đối xứng
+        volatility = returns.unfold(1, self.lookback, 1).std(dim=-1, keepdim=True)  # [B,T-lookback+1,1]
+        volatility = F.pad(volatility, (0,0,self.lookback//2, (self.lookback-1)//2), value=0)  # [B,T,1]
         
-        # 3. Padding để đảm bảo kích thước đầu ra
-        pad_front = (self.lookback - 1) // 2
-        pad_back = (self.lookback - 1) - pad_front
-        volatility = F.pad(volatility, (0,0,pad_front,pad_back), value=0)  # [B, T, 1]
-        
-        return self.proj(volatility)  # [B, T, d_model]
+        return self.proj(volatility)  # [B,T,d_model]
     
 class CryptoTokenEmbedding(nn.Module):
     def __init__(self, c_in, d_model):
@@ -79,40 +79,41 @@ class CryptoTimeEmbedding(nn.Module):
         return self.minute_embed(minutes) + self.hour_embed(hours)
 
 class CryptoDataEmbedding(nn.Module):
-    def __init__(self, c_in, d_model, dropout=0.1):
+    def __init__(self, c_in, d_model, patch_size=16, lookback=11):
         super().__init__()
-        self.token_embedding = CryptoTokenEmbedding(c_in, d_model)
-        self.volatility_embedding = VolatilityEmbedding(d_model)
+        self.patch_size = patch_size
+        self.token_embedding = nn.Sequential(
+            nn.Linear(patch_size * c_in, d_model),
+            nn.LayerNorm(d_model)
+        )
+        self.volatility_embedding = VolatilityEmbedding(d_model, lookback)
         self.time_embedding = CryptoTimeEmbedding(d_model)
         self.position_embedding = PositionalEmbedding(d_model)
-        self.dropout = nn.Dropout(dropout)
         self.volatility_gate = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(0.1)
 
     def forward(self, x, x_mark=None):
-        B, T, _ = x.shape  # T = 35 (số patches)
+        B, T, _ = x.shape  # T = số patches (35)
         
-        # 1. Token embedding
-        x_embed = self.token_embedding(x)  # [B, 35, D]
+        # 1. Token Embedding [B,35,208] -> [B,35,128]
+        x_embed = self.token_embedding(x)
         
-        # 2. Volatility embedding (đã được sửa)
-        volatility = self.volatility_embedding(x[:, :, -1:])  # [B, 35, D]
+        # 2. Volatility Embedding [B,35,1] -> [B,35,128]
+        volatility = self.volatility_embedding(x[:, :, -1:])
         
-        # 3. Time embedding
-        if x_mark is not None:
-            time_embed = self.time_embedding(x_mark)  # [B, 35, D]
-        else:
-            time_embed = 0
+        # 3. Time Embedding [B,35,?] -> [B,35,128]
+        time_embed = self.time_embedding(x_mark) if x_mark is not None else 0
         
-        # 4. Positional embedding
-        pos_embed = self.position_embedding(x)[:, :T, :]  # [1, 35, D]
+        # 4. Positional Embedding [1,35,128]
+        pos_embed = self.position_embedding(x)[:, :T, :]
         
-        # 5. Kiểm tra kích thước cuối cùng
-        print(f"Final shapes - x_embed: {x_embed.shape}, volatility: {volatility.shape}, "
-            f"time_embed: {time_embed.shape if isinstance(time_embed, torch.Tensor) else 'scalar'}, "
-            f"pos_embed: {pos_embed.shape}")
+        # 5. ĐẢM BẢO CÙNG KÍCH THƯỚC
+        assert x_embed.shape == (B, T, self.d_model), f"TokenEmbed shape error: {x_embed.shape}"
+        assert volatility.shape == (B, T, self.d_model), f"Volatility shape error: {volatility.shape}"
+        if isinstance(time_embed, torch.Tensor):
+            assert time_embed.shape == (B, T, self.d_model), f"TimeEmbed shape error: {time_embed.shape}"
         
         # 6. Tính toán output
-        gate = torch.sigmoid(self.volatility_gate(volatility))  # [B, 35, D]
+        gate = torch.sigmoid(self.volatility_gate(volatility))
         out = (x_embed + time_embed + pos_embed) * gate + volatility
-        
         return self.dropout(out)
