@@ -30,13 +30,20 @@ class VolatilityEmbedding(nn.Module):
         
     def forward(self, x_close):  # x_close: [B, T, 1]
         B, T, _ = x_close.shape
-        returns = x_close.diff(dim=1).abs()
-        volatility = returns.unfold(1, self.lookback, 1).std(dim=-1, keepdim=True)
+        
+        # Tính returns với padding ban đầu
+        returns = F.pad(x_close.diff(dim=1).abs(), (0,0,1,0), value=0)  # [B, T, 1]
+        
+        # Tính volatility với padding đối xứng
+        volatility = returns.unfold(1, self.lookback, 1).std(dim=-1, keepdim=True)  # [B, T-lookback+1, 1]
         
         # Padding để đảm bảo output có shape [B, T, 1]
-        pad_size = T - volatility.size(1)
-        volatility = F.pad(volatility, (0,0,0,pad_size), value=0)
-        return self.proj(volatility)  # [B, T, D]
+        pad_front = self.lookback // 2
+        pad_back = self.lookback - pad_front - 1
+        volatility = F.pad(volatility, (0,0,pad_front,pad_back), value=0)
+        
+        # Project lên d_model
+        return self.proj(volatility)  # [B, T, d_model]
     
 class CryptoTokenEmbedding(nn.Module):
     def __init__(self, c_in, d_model):
@@ -83,32 +90,32 @@ class CryptoDataEmbedding(nn.Module):
         self.volatility_gate = nn.Linear(d_model, d_model)
 
     def forward(self, x, x_mark=None):
-        B, T, _ = x.shape  # T = 35 (số patches)
+        B, T, _ = x.shape
         
         # 1. Token embedding
-        x_embed = self.token_embedding(x)  # [B, 35, D]
+        x_embed = self.token_embedding(x)  # [B, T, D]
         
         # 2. Volatility embedding
-        volatility = self.volatility_embedding(x[:, :, -1:])  # [B, 35, D]
+        volatility = self.volatility_embedding(x[:, :, -1:])  # [B, T, D]
         
-        # 3. Time embedding - cắt cho khớp số patches
+        # 3. Time embedding - lấy mẫu tương ứng patches
         if x_mark is not None:
-            # Tính toán indices tương ứng với các patches
+            # Tính indices cho các patches
             patch_indices = torch.linspace(0, x_mark.size(1)-1, T).long()
-            time_embed = self.time_embedding(x_mark[:, patch_indices, :])  # [B, 35, D]
+            time_embed = self.time_embedding(x_mark[:, patch_indices, :])  # [B, T, D]
         else:
             time_embed = 0
         
         # 4. Positional embedding
-        pos_embed = self.position_embedding(x)[:, :T, :]  # [1, 35, D]
+        pos_embed = self.position_embedding(x)[:, :T, :]  # [1, T, D]
         
         # 5. Kiểm tra kích thước
         print(f"Final shapes - x_embed: {x_embed.shape}, volatility: {volatility.shape}, "
-              f"time_embed: {time_embed.shape if isinstance(time_embed, torch.Tensor) else 'scalar'}, "
-              f"pos_embed: {pos_embed.shape}")
+            f"time_embed: {time_embed.shape if isinstance(time_embed, torch.Tensor) else 'scalar'}, "
+            f"pos_embed: {pos_embed.shape}")
         
         # 6. Tính toán output
-        gate = torch.sigmoid(self.volatility_gate(volatility))
+        gate = torch.sigmoid(self.volatility_gate(volatility))  # [B, T, D]
         out = (x_embed + time_embed + pos_embed) * gate + volatility
         
         return self.dropout(out)
