@@ -107,6 +107,25 @@ def train(config_path: str = 'configs/train_config.yaml'):
         train_loader = data_loader.train_loader
         val_loader = data_loader.test_loader
 
+        # In thử 3 batch đầu tiên để kiểm tra dữ liệu
+        logger.info("=== Sample input from DataLoader ===")
+        sample_iter = iter(train_loader)
+        for i in range(3):  # lấy 3 batch đầu tiên
+            try:
+                batch = next(sample_iter)
+                x = batch['x']
+                y = batch['y']
+                time_features = batch.get('time_features', None)
+
+                logger.info(f"[Batch {i+1}] x shape: {x.shape}")
+                logger.info(f"[Batch {i+1}] y shape: {y.shape}")
+                if time_features is not None:
+                    logger.info(f"[Batch {i+1}] time_features shape: {time_features.shape}")
+                logger.info(f"[Batch {i+1}] x sample: {x[0].cpu().numpy().tolist()[:3]}")  # In 3 bước đầu chuỗi đầu tiên
+                logger.info(f"[Batch {i+1}] y sample: {y[0].cpu().numpy().tolist()}")
+            except StopIteration:
+                break
+
         # 4. Khởi tạo model
         model_type = config_dict['model'].get('model_type', 'lstm').lower()
         if model_type == 'lstm_attention':
