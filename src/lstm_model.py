@@ -1,39 +1,40 @@
 import torch
 import torch.nn as nn
 from typing import Dict, Any
-from model import ModelConfig
 from embed import CryptoDataEmbedding
 
 class LSTMModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
-        self.configs = ModelConfig(config)
-        self.device = torch.device(config['training'].get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
+        self.config = config['model']
+        self.device = torch.device(config['training']['device'])
         
-        # Embedding layer
+        # Embedding layer 
         self.embedding = CryptoDataEmbedding(
-            c_in=self.configs.enc_in,
-            d_model=self.configs.d_model,
-            patch_size=self.configs.patch_size,
-            lookback=config['model'].get('volatility_lookback', 11),
-            dropout=self.configs.dropout
+            c_in=self.config['enc_in'],
+            d_model=self.config['d_model'],
+            patch_size=self.config.get('patch_size', 16),
+            lookback=self.config.get('volatility_lookback', 11),
+            dropout=self.config.get('dropout', 0.1)
         )
         
         # LSTM layers
         self.lstm = nn.LSTM(
-            input_size=self.configs.d_model,
-            hidden_size=self.configs.d_model,
-            num_layers=self.configs.e_layers,
+            input_size=self.config['d_model'],
+            hidden_size=self.config['d_model'],
+            num_layers=self.config['e_layers'],
             batch_first=True,
-            dropout=self.configs.dropout if self.configs.e_layers > 1 else 0
+            dropout=self.config.get('dropout', 0.1) if self.config['e_layers'] > 1 else 0,
+            bidirectional=False
         )
         
         # Predictor
         self.predictor = nn.Sequential(
-            nn.Linear(self.configs.d_model, self.configs.d_ff),
+            nn.Linear(self.config['d_model'], self.config.get('d_ff', 512)),
             nn.ReLU(),
-            nn.Linear(self.configs.d_ff, self.configs.c_out * self.configs.pred_len),
-            nn.Unflatten(-1, (self.configs.pred_len, self.configs.c_out))
+            nn.Dropout(self.config.get('dropout', 0.1)),
+            nn.Linear(self.config.get('d_ff', 512), self.config['c_out'] * self.config['pred_len']),
+            nn.Unflatten(-1, (self.config['pred_len'], self.config['c_out']))
         )
 
     def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
@@ -43,10 +44,6 @@ class LSTMModel(nn.Module):
         # LSTM
         lstm_out, _ = self.lstm(x)
         
-        # Only use the last time step's output for prediction
-        last_output = lstm_out[:, -self.configs.pred_len:, :]
-        
         # Prediction
-        pred = self.predictor(last_output)
-        
+        pred = self.predictor(lstm_out[:, -self.config['pred_len']:, :])
         return pred
