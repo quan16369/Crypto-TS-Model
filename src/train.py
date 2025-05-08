@@ -183,7 +183,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
                     epoch_loss += loss.item()
                     
                     # In ra kết quả thực tế và dự đoán
-                    if epoch % 5 == 0:  # In mỗi 5 epoch một lần
+                    if epoch % 2 == 0:  # In mỗi 5 epoch một lần
                         logger.info(f"Epoch {epoch+1}/{config.epochs}, Batch {tepoch.n} | "
                                     f"Real: {y[0].cpu().numpy()}, Pred: {pred[0].cpu().detach().numpy()}")
                     
