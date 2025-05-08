@@ -3,7 +3,9 @@ import torch
 import yaml
 from datetime import datetime
 from torch.utils.data import DataLoader
-from model import CryptoRWKV_TS
+from rwkv_ts_model import CryptoRWKV_TS
+from lstm_attention_model import LSTMAttentionModel
+from lstm_model import LSTMModel
 from data_loader import CryptoDataLoader
 from utils import TrainingTracker, EarlyStopper
 from metrics import CryptoMetrics 
@@ -58,7 +60,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
     train_loader = data_loader.train_loader
     val_loader = data_loader.test_loader
     
-    model = CryptoRWKV_TS(config_dict).to(config.device)
+    model = LSTMModel(config_dict).to(config.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
     stopper = EarlyStopper(config_dict)
     
