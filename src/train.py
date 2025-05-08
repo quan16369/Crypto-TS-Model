@@ -57,7 +57,13 @@ def evaluate(model, data_loader, device):
             
             pred = model(x, time_features)
             total_loss += F.mse_loss(pred, y).item()
+            
+            # In ra kết quả thực tế và dự đoán
+            if data_loader.batch_size == 1:  # Chỉ in ra nếu batch size là 1
+                logger.info(f"Real: {y.cpu().numpy()}, Pred: {pred.cpu().detach().numpy()}")
+            
     return total_loss / len(data_loader)
+
 
 def find_latest_checkpoint(checkpoint_dir):
     """Tìm checkpoint mới nhất trong thư mục"""
@@ -159,9 +165,9 @@ def train(config_path: str = 'configs/train_config.yaml'):
         for epoch in range(start_epoch, config.epochs):
             model.train()
             epoch_loss = 0
-
+            
             with tqdm(train_loader, unit="batch", desc=f"Epoch {epoch+1}/{config.epochs}") as tepoch:
-                for batch_idx, batch in enumerate(tepoch):
+                for batch in tepoch:
                     x = batch['x'].to(config.device)
                     y = batch['y'].to(config.device)
                     time_features = batch.get('time_features', None)
@@ -175,13 +181,12 @@ def train(config_path: str = 'configs/train_config.yaml'):
                     optimizer.step()
                     
                     epoch_loss += loss.item()
-
-                    # Log mỗi batch
-                    if batch_idx % 10 == 0:  # Log mỗi 10 batch (có thể thay đổi số lượng)
-                        logger.info(f"Epoch {epoch+1}/{config.epochs} | "
-                                    f"Batch {batch_idx+1}/{len(train_loader)} | "
-                                    f"Loss: {loss.item():.4f} | LR: {optimizer.param_groups[0]['lr']:.2e}")
-                        
+                    
+                    # In ra kết quả thực tế và dự đoán
+                    if epoch % 5 == 0:  # In mỗi 5 epoch một lần
+                        logger.info(f"Epoch {epoch+1}/{config.epochs}, Batch {tepoch.n} | "
+                                    f"Real: {y[0].cpu().numpy()}, Pred: {pred[0].cpu().detach().numpy()}")
+                    
                     tepoch.set_postfix(loss=loss.item())
 
             # 7. Đánh giá và logging
