@@ -32,10 +32,10 @@ class LSTMModel(nn.Module):
         self.predictor = nn.Sequential(
             nn.Linear(self.config['d_model'], self.config.get('d_ff', 512)),
             nn.ReLU(),
-            nn.Linear(self.config.get('d_ff', 512), self.config['c_out'] * self.config['pred_len']),
-            nn.Unflatten(-1, (self.config['pred_len'], self.config['c_out']))
+            nn.Linear(self.config.get('d_ff', 512), self.config['c_out']),  # Chỉ output 1 feature
+            nn.Unflatten(1, (self.config['pred_len'], self.config['c_out']))  # Reshape thành [B, pred_len, 1]
         )
-
+        
     def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
         # Input shape: [B, L, C]
         
