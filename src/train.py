@@ -114,13 +114,6 @@ def train(config_path: str = 'configs/train_config.yaml'):
         val_loader = data_loader.test_loader
 
         # In thử 3 batch đầu tiên để kiểm tra dữ liệu
-        import logging
-
-        # Cấu hình logging
-        logging.basicConfig(level=logging.INFO)
-        logger = logging.getLogger(__name__)
-
-        # In thử 3 batch đầu tiên để kiểm tra dữ liệu
         print("=== Sample input from DataLoader ===")
         sample_iter = iter(train_loader)
 
