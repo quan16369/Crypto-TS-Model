@@ -114,22 +114,38 @@ def train(config_path: str = 'configs/train_config.yaml'):
         val_loader = data_loader.test_loader
 
         # In thử 3 batch đầu tiên để kiểm tra dữ liệu
-        logger.info("=== Sample input from DataLoader ===")
+        import logging
+
+        # Cấu hình logging
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger(__name__)
+
+        # In thử 3 batch đầu tiên để kiểm tra dữ liệu
+        print("=== Sample input from DataLoader ===")
         sample_iter = iter(train_loader)
+
+        # Kiểm tra số lượng batch trong train_loader
+        print(f"Total batches in train_loader: {len(train_loader)}")
+
         for i in range(3):  # lấy 3 batch đầu tiên
             try:
                 batch = next(sample_iter)
+                
+                # In cấu trúc của batch để kiểm tra
+                print(f"Batch keys: {batch.keys()}")
+
                 x = batch['x']
                 y = batch['y']
                 time_features = batch.get('time_features', None)
 
-                logger.info(f"[Batch {i+1}] x shape: {x.shape}")
-                logger.info(f"[Batch {i+1}] y shape: {y.shape}")
+                print(f"[Batch {i+1}] x shape: {x.shape}")
+                print(f"[Batch {i+1}] y shape: {y.shape}")
                 if time_features is not None:
-                    logger.info(f"[Batch {i+1}] time_features shape: {time_features.shape}")
-                logger.info(f"[Batch {i+1}] x sample: {x[0].cpu().numpy().tolist()[:3]}")  # In 3 bước đầu chuỗi đầu tiên
-                logger.info(f"[Batch {i+1}] y sample: {y[0].cpu().numpy().tolist()}")
+                    print(f"[Batch {i+1}] time_features shape: {time_features.shape}")
+                print(f"[Batch {i+1}] x sample: {x[0].cpu().numpy().tolist()[:3]}")  # In 3 bước đầu chuỗi đầu tiên
+                print(f"[Batch {i+1}] y sample: {y[0].cpu().numpy().tolist()}")
             except StopIteration:
+                print("No more batches to process.")
                 break
 
         # 4. Khởi tạo model
