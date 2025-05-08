@@ -159,9 +159,9 @@ def train(config_path: str = 'configs/train_config.yaml'):
         for epoch in range(start_epoch, config.epochs):
             model.train()
             epoch_loss = 0
-            
+
             with tqdm(train_loader, unit="batch", desc=f"Epoch {epoch+1}/{config.epochs}") as tepoch:
-                for batch in tepoch:
+                for batch_idx, batch in enumerate(tepoch):
                     x = batch['x'].to(config.device)
                     y = batch['y'].to(config.device)
                     time_features = batch.get('time_features', None)
@@ -175,6 +175,13 @@ def train(config_path: str = 'configs/train_config.yaml'):
                     optimizer.step()
                     
                     epoch_loss += loss.item()
+
+                    # Log mỗi batch
+                    if batch_idx % 10 == 0:  # Log mỗi 10 batch (có thể thay đổi số lượng)
+                        logger.info(f"Epoch {epoch+1}/{config.epochs} | "
+                                    f"Batch {batch_idx+1}/{len(train_loader)} | "
+                                    f"Loss: {loss.item():.4f} | LR: {optimizer.param_groups[0]['lr']:.2e}")
+                        
                     tepoch.set_postfix(loss=loss.item())
 
             # 7. Đánh giá và logging
@@ -187,8 +194,9 @@ def train(config_path: str = 'configs/train_config.yaml'):
             tracker.log("Metrics/lr", optimizer.param_groups[0]['lr'], epoch)
 
             logger.info(f"Epoch {epoch+1}/{config.epochs} | "
-                       f"Train Loss: {avg_loss:.4f} | Val Loss: {val_loss:.4f} | "
-                       f"LR: {optimizer.param_groups[0]['lr']:.2e}")
+                    f"Train Loss: {avg_loss:.4f} | Val Loss: {val_loss:.4f} | "
+                    f"LR: {optimizer.param_groups[0]['lr']:.2e}")
+
 
             # 8. Lưu checkpoint
             if epoch % config.checkpoint_interval == 0:
