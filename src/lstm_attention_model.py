@@ -2,10 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any
-from model import ModelConfig
 from embed import CryptoDataEmbedding
 
-class AttentionLayer(nn.Module):
+class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, n_heads):
         super().__init__()
         self.d_model = d_model
@@ -18,62 +17,54 @@ class AttentionLayer(nn.Module):
         self.out_linear = nn.Linear(d_model, d_model)
         
     def forward(self, x):
-        batch_size, seq_len, _ = x.size()
+        B, T, _ = x.shape
+        q = self.q_linear(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.k_linear(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        v = self.v_linear(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         
-        # Linear projections
-        q = self.q_linear(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        k = self.k_linear(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        v = self.v_linear(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        attn_scores = (q @ k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim))
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        output = (attn_weights @ v).transpose(1, 2).contiguous().view(B, T, -1)
         
-        # Scaled Dot-Product Attention
-        scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
-        attn_weights = F.softmax(scores, dim=-1)
-        output = torch.matmul(attn_weights, v)
-        
-        # Concatenate heads
-        output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
-        
-        # Final linear layer
-        output = self.out_linear(output)
-        
-        return output
+        return self.out_linear(output)
 
 class LSTMAttentionModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
-        self.configs = ModelConfig(config)
-        self.device = torch.device(config['training'].get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
+        self.config = config['model']
+        self.device = torch.device(config['training']['device'])
         
-        # Embedding layer
+        # Embedding
         self.embedding = CryptoDataEmbedding(
-            c_in=self.configs.enc_in,
-            d_model=self.configs.d_model,
-            patch_size=self.configs.patch_size,
-            lookback=config['model'].get('volatility_lookback', 11),
-            dropout=self.configs.dropout
+            c_in=self.config['enc_in'],
+            d_model=self.config['d_model'],
+            patch_size=self.config.get('patch_size', 16),
+            lookback=self.config.get('volatility_lookback', 11),
+            dropout=self.config.get('dropout', 0.1)
         )
         
-        # LSTM layers
+        # LSTM
         self.lstm = nn.LSTM(
-            input_size=self.configs.d_model,
-            hidden_size=self.configs.d_model,
-            num_layers=self.configs.e_layers,
+            input_size=self.config['d_model'],
+            hidden_size=self.config['d_model'],
+            num_layers=self.config['e_layers'],
             batch_first=True,
-            dropout=self.configs.dropout if self.configs.e_layers > 1 else 0
+            dropout=self.config.get('dropout', 0.1) if self.config['e_layers'] > 1 else 0
         )
         
-        # Attention layer
-        self.attention = AttentionLayer(
-            d_model=self.configs.d_model,
-            n_heads=self.configs.n_heads
+        # Attention
+        self.attention = MultiHeadAttention(
+            d_model=self.config['d_model'],
+            n_heads=self.config['n_heads']
         )
         
         # Predictor
         self.predictor = nn.Sequential(
-            nn.Linear(self.configs.d_model, self.configs.d_ff),
-            nn.ReLU(),
-            nn.Linear(self.configs.d_ff, self.configs.c_out * self.configs.pred_len),
-            nn.Unflatten(-1, (self.configs.pred_len, self.configs.c_out))
+            nn.Linear(self.config['d_model'], self.config.get('d_ff', 512)),
+            nn.GELU(),
+            nn.Dropout(self.config.get('dropout', 0.1)),
+            nn.Linear(self.config.get('d_ff', 512), self.config['c_out'] * self.config['pred_len']),
+            nn.Unflatten(-1, (self.config['pred_len'], self.config['c_out']))
         )
 
     def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
@@ -86,10 +77,6 @@ class LSTMAttentionModel(nn.Module):
         # Attention
         attn_out = self.attention(lstm_out)
         
-        # Only use the last time step's output for prediction
-        last_output = attn_out[:, -self.configs.pred_len:, :]
-        
         # Prediction
-        pred = self.predictor(last_output)
-        
+        pred = self.predictor(attn_out[:, -self.config['pred_len']:, :])
         return pred
