@@ -1,27 +1,41 @@
-data:
-  path: "data/raw/crypto_data.csv"
-  freq: "5min"
-  train_ratio: 0.9
-
 model:
-  enc_in: 10
-  d_model: 128
-  n_heads: 4
-  e_layers: 4
-  d_ff: 256
-  dropout: 0.1
-  pred_len: 10
-  seq_len: 60
+  # === Input/Output ===
+  enc_in: 13                  # Number of input features (e.g., closing price, volume, etc.)
+  c_out: 1                    # Number of output features (typically 1 for price prediction)
+  seq_len: 288                # Input sequence length (e.g., 288 time steps ≈ 1 day with 5-minute data)
+  pred_len: 12                # Prediction length (e.g., 12 steps ≈ 1 hour with 5-minute data)
+  
+  # === Embedding ===
+  patch_size: 16              # Patch size for embedding (if used)
+  volatility_lookback: 11     # Lookback window for volatility calculation
+  
+  # === LSTM Architecture ===
+  d_model: 256                # Hidden state dimension
+  e_layers: 3                 # Number of LSTM layers
+  dropout: 0.2                # Dropout rate
+  
+  # === Attention ===
+  n_heads: 8                  # Number of attention heads
+  d_ff: 512                   # Hidden layer size in predictor
+  
+  # === Time Features ===
+  time_features: 0            # Number of time features (0 if not used)
+
+data:
+  path: "/kaggle/input/btcusdt-5m-full/BTCUSDT_5m_full.csv" # Path to data file
+  freq: "5T"                  # Data frequency (5 minutes in this case)
+  train_ratio: 0.8            # Train/validation split ratio (80% train, 20% validation)
 
 training:
-  epochs: 100
-  batch_size: 64
-  lr: 0.001
-  patience: 10
-  min_delta: 0.01
-  device: "cuda"
-  log_dir: "logs"
-  checkpoint_dir: "checkpoints"
-
-metrics:
-  volatility_window: 10
+  epochs: 30                  # Maximum number of epochs
+  batch_size: 128             # Batch size
+  lr: 0.001                   # Learning rate
+  patience: 20                # Patience for early stopping
+  min_delta: 0.001            # Minimum improvement threshold for early stopping
+  log_dir: "logs"             # Directory for logs
+  checkpoint_dir: "checkpoints" # Directory for model checkpoints
+  device: "cuda"              # Computing device (cuda/cpu)
+  clip_grad: 1.0              # Gradient clipping value to prevent exploding gradients
+  weight_decay: 0.0001        # L2 regularization weight
+  resume: "auto"              # Automatically resume from checkpoint if available
+  model_type: "lstm_attention" # Model architecture type
