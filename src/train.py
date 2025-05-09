@@ -19,6 +19,7 @@ from typing import Dict, Any
 import warnings
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import numpy as np
+import matplotlib.pyplot as plt
 
 # Cấu hình logging và suppress warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -126,34 +127,6 @@ def train(config_path: str = 'configs/train_config.yaml'):
         train_loader = data_loader.train_loader
         val_loader = data_loader.test_loader
 
-        # In thử 3 batch đầu tiên để kiểm tra dữ liệu
-        print("=== Sample input from DataLoader ===")
-        sample_iter = iter(train_loader)
-
-        # Kiểm tra số lượng batch trong train_loader
-        print(f"Total batches in train_loader: {len(train_loader)}")
-
-        for i in range(3):  # lấy 3 batch đầu tiên
-            try:
-                batch = next(sample_iter)
-                
-                # In cấu trúc của batch để kiểm tra
-                print(f"Batch keys: {batch.keys()}")
-
-                x = batch['x']
-                y = batch['y']
-                time_features = batch.get('time_features', None)
-
-                print(f"[Batch {i+1}] x shape: {x.shape}")
-                print(f"[Batch {i+1}] y shape: {y.shape}")
-                if time_features is not None:
-                    print(f"[Batch {i+1}] time_features shape: {time_features.shape}")
-                print(f"[Batch {i+1}] x sample: {x[0].cpu().numpy().tolist()[:3]}")  # In 3 bước đầu chuỗi đầu tiên
-                print(f"[Batch {i+1}] y sample: {y[0].cpu().numpy().tolist()}")
-            except StopIteration:
-                print("No more batches to process.")
-                break
-
         # 4. Khởi tạo model
         model_type = config_dict['model'].get('model_type', 'lstm').lower()
         if model_type == 'lstm_attention':
@@ -178,6 +151,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
                                         max_lr=1e-3,
                                         step_size_up=500
                                     )
+        
         # 5. Resume training nếu có
         start_epoch = 0
         best_loss = float('inf')
@@ -196,6 +170,8 @@ def train(config_path: str = 'configs/train_config.yaml'):
         logger.info(f"Train samples: {len(train_loader.dataset)}, Val samples: {len(val_loader.dataset)}")
 
         # 6. Vòng lặp training
+        train_losses = []  # List to store training losses
+        val_losses = []  # List to store validation losses
         for epoch in range(start_epoch, config.epochs):
             model.train()
             epoch_loss = 0
@@ -216,17 +192,15 @@ def train(config_path: str = 'configs/train_config.yaml'):
                     
                     epoch_loss += loss.item()
                     
-                    # In ra kết quả thực tế và dự đoán
-                    if epoch % 2 == 0:  # In mỗi 5 epoch một lần
-                        logger.info(f"Epoch {epoch+1}/{config.epochs}, Batch {tepoch.n} | "
-                                    f"Real: {y[0].cpu().numpy()}, Pred: {pred[0].cpu().detach().numpy()}")
-                    
                     tepoch.set_postfix(loss=loss.item())
 
             # 7. Đánh giá và logging
             avg_loss = epoch_loss / len(train_loader)
             val_loss = evaluate(model, val_loader, config.device)
             scheduler.step(val_loss)
+
+            train_losses.append(avg_loss)  # Append training loss
+            val_losses.append(val_loss)  # Append validation loss
 
             tracker.log("Loss/train", avg_loss, epoch)
             tracker.log("Loss/val", val_loss, epoch)
@@ -235,7 +209,6 @@ def train(config_path: str = 'configs/train_config.yaml'):
             logger.info(f"Epoch {epoch+1}/{config.epochs} | "
                     f"Train Loss: {avg_loss:.4f} | Val Loss: {val_loss:.4f} | "
                     f"LR: {optimizer.param_groups[0]['lr']:.2e}")
-
 
             # 8. Lưu checkpoint
             if epoch % config.checkpoint_interval == 0:
@@ -267,6 +240,18 @@ def train(config_path: str = 'configs/train_config.yaml'):
             if stopper.check(val_loss):
                 logger.info(f"Early stopping triggered at epoch {epoch+1}")
                 break
+
+        # Plotting learning curve
+        plt.figure(figsize=(10, 6))
+        plt.plot(train_losses, label='Training Loss', color='blue')
+        plt.plot(val_losses, label='Validation Loss', color='red')
+        plt.xlabel('Epochs')
+        plt.ylabel('Loss')
+        plt.title('Learning Curve')
+        plt.legend()
+        plt.grid(True)
+        plt.savefig('learning_curve.png')
+        plt.show()
 
     except Exception as e:
         logger.error(f"Training failed: {str(e)}", exc_info=True)
