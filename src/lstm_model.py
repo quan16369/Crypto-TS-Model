@@ -24,19 +24,11 @@ class LSTMModel(nn.Module):
             dropout=self.config.get('dropout', 0.2) if self.config['e_layers'] > 1 else 0
         )
         
-        # 3. Time Features Integration
-        if self.config.get('time_features', 0) > 0:
-            self.time_net = nn.Sequential(
-                nn.Linear(self.config['time_features'], self.config['d_model']),
-                nn.SiLU(),
-                nn.LayerNorm(self.config['d_model'])
-            )
-        
-        # 4. Output Network
+        # 3. Output Network - Đảm bảo đầu ra có kích thước pred_len
         self.output_net = nn.Sequential(
             nn.Linear(self.config['d_model'], self.config['d_model']),
             nn.SiLU(),
-            nn.Linear(self.config['d_model'], self.config['c_out'] * self.config['pred_len']),
+            nn.Linear(self.config['d_model'], self.config['pred_len'] * self.config['c_out']),
             nn.Unflatten(-1, (self.config['pred_len'], self.config['c_out']))
         )
 
@@ -44,15 +36,13 @@ class LSTMModel(nn.Module):
         # 1. Feature projection
         x = self.input_net(x_enc)
         
-        # 2. Time features fusion
-        if x_mark_enc is not None and hasattr(self, 'time_net'):
-            x = x + self.time_net(x_mark_enc)
-        
-        # 3. LSTM processing
+        # 2. LSTM processing
         lstm_out, _ = self.lstm(x)
         
-        # 4. Get last hidden state
-        last_hidden = lstm_out[:, -1, :]  # Lấy trạng thái ẩn cuối cùng [B, D]
+        # 3. Lấy hidden state cuối cùng
+        last_hidden = lstm_out[:, -1, :]  # Shape: [batch_size, d_model]
         
-        # 5. Final prediction
-        return self.output_net(last_hidden)
+        # 4. Dự đoán
+        pred = self.output_net(last_hidden)  # Shape: [batch_size, pred_len, c_out]
+        
+        return pred.squeeze(-1)  # Loại bỏ chiều cuối nếu c_out=1
