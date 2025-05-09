@@ -1,14 +1,9 @@
-# Trong Notebook Kaggle
+### Installation
+```bash
+git clone https://github.com/yourusername/crypto-forecasting.git
+cd crypto-forecasting
+pip install -r requirements.txt
 
-!mkdir -p /kaggle/working/{checkpoints,logs}
-
-# Cài đặt thư viện
-
-!pip install -r /kaggle/input/crypto-rwkv-ts/requirements.txt
-
-# Chạy training
-
-%run /kaggle/input/crypto-rwkv-ts/src/train.py \
- --data_path /kaggle/input/BTCUSDT_5m_last365days.csv \
- --checkpoint_dir /kaggle/working/checkpoints \
- --log_dir /kaggle/working/logs
+### Training
+```bash
+python train.py --config configs/train_config.yaml
