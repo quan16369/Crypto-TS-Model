@@ -5,15 +5,14 @@ from typing import Dict, Any
 class LSTMModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
-        self.config = config['model']  # Lấy phần config model
+        self.config = config['model']
         
         # 1. Input Projection
         self.input_net = nn.Sequential(
-            nn.Linear(self.config['enc_in'], self.config['d_model']*2),
+            nn.Linear(self.config['enc_in'], self.config['d_model']),
             nn.GELU(),
-            nn.LayerNorm(self.config['d_model']*2),
-            nn.Dropout(self.config.get('dropout', 0.2)),
-            nn.Linear(self.config['d_model']*2, self.config['d_model'])
+            nn.LayerNorm(self.config['d_model']),
+            nn.Dropout(self.config.get('dropout', 0.2))
         )
         
         # 2. LSTM 
@@ -22,8 +21,7 @@ class LSTMModel(nn.Module):
             hidden_size=self.config['d_model'],
             num_layers=self.config['e_layers'],
             batch_first=True,
-            dropout=self.config.get('dropout', 0.2) if self.config['e_layers'] > 1 else 0,
-            proj_size=self.config['d_model']//2 if self.config['e_layers'] > 2 else None
+            dropout=self.config.get('dropout', 0.2) if self.config['e_layers'] > 1 else 0
         )
         
         # 3. Time Features Integration
@@ -36,10 +34,10 @@ class LSTMModel(nn.Module):
         
         # 4. Output Network
         self.output_net = nn.Sequential(
-            nn.Linear(self.config['d_model'], self.config['d_model']//2),
+            nn.Linear(self.config['d_model'], self.config['d_model']),
             nn.SiLU(),
-            nn.Linear(self.config['d_model']//2, self.config['c_out']),
-            nn.Unflatten(1, (self.config['pred_len'], self.config['c_out']))
+            nn.Linear(self.config['d_model'], self.config['c_out'] * self.config['pred_len']),
+            nn.Unflatten(-1, (self.config['pred_len'], self.config['c_out']))
         )
 
     def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
@@ -53,8 +51,8 @@ class LSTMModel(nn.Module):
         # 3. LSTM processing
         lstm_out, _ = self.lstm(x)
         
-        # 4. Get last pred_len steps
-        last_steps = lstm_out[:, -self.config['pred_len']:, :]
+        # 4. Get last hidden state
+        last_hidden = lstm_out[:, -1, :]  # Lấy trạng thái ẩn cuối cùng [B, D]
         
         # 5. Final prediction
-        return self.output_net(last_steps)
+        return self.output_net(last_hidden)
