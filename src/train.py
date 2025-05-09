@@ -9,6 +9,8 @@ import glob
 from rwkv_ts_model import CryptoRWKV_TS
 from lstm_attention_model import LSTMAttentionModel
 from lstm_model import LSTMModel
+from cnn_lstm_model import CNNLSTMModel
+from cnn_lstm_attention_model import LSTMWithCNNAttention
 from data_loader import CryptoDataLoader
 from utils import TrainingTracker, EarlyStopper
 from metrics import CryptoMetrics 
@@ -158,6 +160,10 @@ def train(config_path: str = 'configs/train_config.yaml'):
             model = LSTMAttentionModel(config_dict).to(config.device)
         elif model_type == 'rwkv':
             model = CryptoRWKV_TS(config_dict).to(config.device)
+        elif model_type == 'cnn_lstm':
+            model = CNNLSTMModel(config_dict).to(config.device)
+        elif model_type == 'cnn_lstm_attention':
+            model = LSTMWithCNNAttention(config_dict).to(config.device)
         else:
             model = LSTMModel(config_dict).to(config.device)
 
