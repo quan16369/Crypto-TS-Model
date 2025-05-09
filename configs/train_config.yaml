@@ -4,7 +4,8 @@ model:
   c_out: 1                    # Number of output features (typically 1 for price prediction)
   seq_len: 288                # Input sequence length (e.g., 288 time steps ≈ 1 day with 5-minute data)
   pred_len: 12                # Prediction length (e.g., 12 steps ≈ 1 hour with 5-minute data)
-  
+  model_type: "lstm_attention" # Model architecture type
+
   # === Embedding ===
   patch_size: 16              # Patch size for embedding (if used)
   volatility_lookback: 11     # Lookback window for volatility calculation
@@ -38,4 +39,3 @@ training:
   clip_grad: 1.0              # Gradient clipping value to prevent exploding gradients
   weight_decay: 0.0001        # L2 regularization weight
   resume: "auto"              # Automatically resume from checkpoint if available
-  model_type: "lstm_attention" # Model architecture type
