@@ -15,6 +15,8 @@ from metrics import CryptoMetrics
 import torch.nn.functional as F
 from typing import Dict, Any
 import warnings
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import numpy as np
 
 # Cấu hình logging và suppress warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -45,25 +47,34 @@ class TrainConfig:
         self.checkpoint_interval = config_dict['training'].get('checkpoint_interval', 5)
 
 def evaluate(model, data_loader, device):
-    """Đánh giá model trên validation set"""
     model.eval()
-    total_loss = 0
+    preds = []
+    targets = []
+
     with torch.no_grad():
         for batch in tqdm(data_loader, desc='Validating', leave=False):
             x = batch['x'].to(device)
             y = batch['y'].to(device)
             time_features = batch.get('time_features', None)
             time_features = time_features.to(device) if time_features is not None else None
-            
-            pred = model(x, time_features)
-            total_loss += F.mse_loss(pred, y).item()
-            
-            # In ra kết quả thực tế và dự đoán
-            if data_loader.batch_size == 1:  # Chỉ in ra nếu batch size là 1
-                logger.info(f"Real: {y.cpu().numpy()}, Pred: {pred.cpu().detach().numpy()}")
-            
-    return total_loss / len(data_loader)
 
+            pred = model(x, time_features)
+
+            preds.append(pred.cpu().numpy())
+            targets.append(y.cpu().numpy())
+
+    preds = np.concatenate(preds, axis=0)
+    targets = np.concatenate(targets, axis=0)
+
+    mse = mean_squared_error(targets, preds)
+    mae = mean_absolute_error(targets, preds)
+    rmse = np.sqrt(mse)
+    mape = np.mean(np.abs((targets - preds) / (targets + 1e-8))) * 100
+    r2 = r2_score(targets, preds)
+
+    print(f"[Eval] MSE: {mse:.4f} | MAE: {mae:.4f} | RMSE: {rmse:.4f} | MAPE: {mape:.2f}% | R2: {r2:.4f}")
+    
+    return mse  
 
 def find_latest_checkpoint(checkpoint_dir):
     """Tìm checkpoint mới nhất trong thư mục"""
@@ -150,9 +161,17 @@ def train(config_path: str = 'configs/train_config.yaml'):
         else:
             model = LSTMModel(config_dict).to(config.device)
 
-        optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=1e-4)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5)
-
+        optimizer = torch.optim.Adam(
+                                        model.parameters(), 
+                                        lr=config.lr, 
+                                        weight_decay=0.001  
+        )
+        scheduler = scheduler = torch.optim.lr_scheduler.CyclicLR(
+                                        optimizer, 
+                                        base_lr=1e-4, 
+                                        max_lr=1e-3,
+                                        step_size_up=500
+                                    )
         # 5. Resume training nếu có
         start_epoch = 0
         best_loss = float('inf')
