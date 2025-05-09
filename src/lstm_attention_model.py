@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any
-from embed import CryptoDataEmbedding
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, n_heads):
@@ -34,13 +33,11 @@ class LSTMAttentionModel(nn.Module):
         self.config = config['model']
         self.device = torch.device(config['training']['device'])
         
-        # Embedding
-        self.embedding = CryptoDataEmbedding(
-            c_in=self.config['enc_in'],
-            d_model=self.config['d_model'],
-            patch_size=self.config.get('patch_size', 16),
-            lookback=self.config.get('volatility_lookback', 11),
-            dropout=self.config.get('dropout', 0.1)
+        # Input projection (thay thế cho embedding)
+        self.input_proj = nn.Sequential(
+            nn.Linear(self.config['enc_in'], self.config['d_model']),
+            nn.LayerNorm(self.config['d_model']),
+            nn.Dropout(self.config.get('dropout', 0.1))
         )
         
         # LSTM
@@ -68,15 +65,15 @@ class LSTMAttentionModel(nn.Module):
         )
 
     def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
-        # Embedding
-        x = self.embedding(x_enc, x_mark_enc)
+        # 1. Project input features
+        x = self.input_proj(x_enc)
         
-        # LSTM
+        # 2. LSTM processing
         lstm_out, _ = self.lstm(x)
         
-        # Attention
+        # 3. Attention
         attn_out = self.attention(lstm_out)
         
-        # Prediction
+        # 4. Prediction
         pred = self.predictor(attn_out[:, -self.config['pred_len']:, :])
         return pred
