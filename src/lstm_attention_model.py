@@ -8,20 +8,19 @@ class LSTMAttentionModel(nn.Module):
         super().__init__()
         self.config = config['model']
         
-        # Input projection layer với BatchNorm
+        # Input projection layer
         self.input_proj = nn.Sequential(
             nn.Linear(self.config['enc_in'], self.config['d_model']),
             nn.BatchNorm1d(self.config['d_model']),
             nn.Dropout(self.config.get('dropout', 0.2))
         )
         
-        # Bidirectional LSTM 
-        self.bilstm = nn.LSTM(
+        # LSTM layer
+        self.lstm = nn.LSTM(
             input_size=self.config['d_model'],
-            hidden_size=self.config['d_model']//2,  
-            num_layers=2,  
+            hidden_size=self.config['d_model'],
+            num_layers=2,
             batch_first=True,
-            bidirectional=True,
             dropout=self.config.get('dropout', 0.2)
         )
         
@@ -35,24 +34,23 @@ class LSTMAttentionModel(nn.Module):
         # Output layers 
         self.output = nn.Sequential(
             nn.Linear(self.config['d_model'], self.config['d_model']),
-            nn.BatchNorm1d(self.config['d_model']),
             nn.ReLU(),
-            nn.Dropout(self.config.get('dropout', 0.2)),
-            nn.Linear(self.config['d_model'], self.config['c_out'])
+            nn.Linear(self.config['d_model'], self.config['pred_len'])  # Output pred_len steps
         )
 
-    def forward(self, x, time_features=None):  
+    def forward(self, x, time_features=None):
         # Input projection
-        x = self.input_proj(x.reshape(-1, x.size(-1))).reshape(x.size(0), -1, self.config['d_model'])
+        B, T, _ = x.shape
+        x = self.input_proj(x.reshape(-1, x.size(-1))).reshape(B, T, -1)
         
-        # BiLSTM processing
-        lstm_out, _ = self.bilstm(x)  # [batch, seq_len, d_model]
+        # LSTM processing
+        lstm_out, _ = self.lstm(x)  # [batch, seq_len, d_model]
         
         # Attention mechanism
         attn_weights = F.softmax(self.attention(lstm_out), dim=1)  # [batch, seq_len, 1]
         context = torch.sum(attn_weights * lstm_out, dim=1)  # [batch, d_model]
         
-        # Output prediction
-        pred = self.output(context)  # [batch, c_out]
+        # Output prediction - [batch, pred_len]
+        pred = self.output(context)
         
-        return pred.unsqueeze(1)  # [batch, 1, c_out] để phù hợp với pred_len
+        return pred.unsqueeze(-1)  # [batch, pred_len, 1]
