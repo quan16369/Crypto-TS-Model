@@ -15,10 +15,10 @@ class LSTMAttentionModel(nn.Module):
             nn.Dropout(self.config.get('dropout', 0.2))
         )
         
-        # Bidirectional LSTM với 2 layers
+        # Bidirectional LSTM 
         self.bilstm = nn.LSTM(
             input_size=self.config['d_model'],
-            hidden_size=self.config['d_model']//2,  # Chia 2 do dùng bidirectional
+            hidden_size=self.config['d_model']//2,  
             num_layers=2,  
             batch_first=True,
             bidirectional=True,
@@ -41,7 +41,7 @@ class LSTMAttentionModel(nn.Module):
             nn.Linear(self.config['d_model'], self.config['c_out'])
         )
 
-    def forward(self, x):
+    def forward(self, x, time_features=None):  
         # Input projection
         x = self.input_proj(x.reshape(-1, x.size(-1))).reshape(x.size(0), -1, self.config['d_model'])
         
