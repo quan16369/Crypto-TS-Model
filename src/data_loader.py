@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 import yaml
 from pathlib import Path
 from sklearn.base import TransformerMixin, BaseEstimator
+from sklearn.model_selection import train_test_split
 
 class CryptoDataset(Dataset):
     def __init__(self, 
@@ -23,11 +24,11 @@ class CryptoDataset(Dataset):
         self.test_mode = test_mode
         
         raw_df = self._load_and_clean(data_path)
-        self.data = self._add_crypto_features(raw_df, self.freq)
+        self.data = self._enhance_crypto_features(raw_df, self.freq)
         
-        # Khởi tạo scalers
+        # Khởi tạo scalers với cải tiến mới
         self.scalers = scalers if scalers is not None else {
-            'price': StandardScaler(),
+            'price': RobustScaler(),  # Thay StandardScaler bằng RobustScaler
             'volume': RobustScaler(),
             'indicators': MinMaxScaler(feature_range=(-1, 1))
         }
@@ -35,6 +36,7 @@ class CryptoDataset(Dataset):
         self._scale_data()
 
     def _load_and_clean(self, path: str) -> pd.DataFrame:
+        """Cải tiến quá trình làm sạch dữ liệu"""
         df = pd.read_csv(path, float_precision='high')
         
         # Chuẩn hóa tên cột
@@ -52,14 +54,22 @@ class CryptoDataset(Dataset):
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df = df.set_index('timestamp').sort_index()
         
-        # Xử lý missing values
+        # Xử lý missing values và outliers
         df['volume'] = df['volume'].replace(0, np.nan)
         df['volume'] = df['volume'].fillna(df['volume'].rolling(12, min_periods=1).median())
+        
+        # Clip outliers cho các cột quan trọng
+        for col in ['close', 'volume', 'returns']:
+            q1 = df[col].quantile(0.01)
+            q3 = df[col].quantile(0.99)
+            df[col] = df[col].clip(lower=q1, upper=q3)
+            
         df = df.replace([np.inf, -np.inf], np.nan).ffill().bfill()
         
         return df
 
-    def _add_crypto_features(self, df: pd.DataFrame, freq: str) -> pd.DataFrame:
+    def _enhance_crypto_features(self, df: pd.DataFrame, freq: str) -> pd.DataFrame:
+        """Cải tiến feature engineering"""
         if freq != '5T':
             ohlc_dict = {
                 'open': 'first',
@@ -70,21 +80,25 @@ class CryptoDataset(Dataset):
             }
             df = df.resample(freq).apply(ohlc_dict).dropna()
         
-        # Tính toán các features
-        df['returns'] = df['close'].pct_change()
-        df['volatility'] = df['returns'].rolling(12).std()
+        # Tính toán các features 
+        df['log_returns'] = np.log1p(df['close'].pct_change())
+        df['volatility'] = df['log_returns'].rolling(12).std()
         
         # Technical indicators
-        df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=10).rsi()
-        df['macd'] = ta.trend.MACD(df['close'], window_slow=26, window_fast=12, window_sign=9).macd_diff()
+        df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
+        df['macd'] = ta.trend.MACD(df['close'], window_slow=26, window_fast=12).macd_diff()
+        df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
         
-        # Volume features
-        df['volume_ma'] = df['volume'].rolling(12).mean()
+        # Volume features 
+        df['volume_zscore'] = (df['volume'] - df['volume'].rolling(24).mean()) / df['volume'].rolling(24).std()
         df['obv'] = ta.volume.OnBalanceVolumeIndicator(df['close'], df['volume']).on_balance_volume()
         
         # Price features
         df['price_spread'] = (df['high'] - df['low']) / df['close']
-        df['liquidity'] = df['volume'] * df['close']
+        df['liquidity'] = np.log1p(df['volume'] * df['close'])  # Log transform
+        
+        # Momentum features 
+        df['momentum_5_20'] = df['close'].rolling(5).mean() - df['close'].rolling(20).mean()
         
         return df.dropna()
 
@@ -92,19 +106,20 @@ class CryptoDataset(Dataset):
         if not self.train:
             return
             
-        # Nhóm các features để scale
+        # Nhóm các features để scale với logic mới
         price_cols = ['open', 'high', 'low', 'close']
-        volume_cols = ['volume', 'volume_ma', 'liquidity']
-        indicator_cols = ['rsi', 'macd', 'volatility', 'returns', 'obv', 'price_spread']
+        volume_cols = ['volume', 'volume_zscore', 'liquidity']
+        indicator_cols = ['rsi', 'macd', 'volatility', 'log_returns', 'obv', 'price_spread', 'atr', 'momentum_5_20']
         
+        # Fit scalers với data đã được xử lý outlier
         self.scalers['price'].fit(self.data[price_cols])
         self.scalers['volume'].fit(self.data[volume_cols])
         self.scalers['indicators'].fit(self.data[indicator_cols])
 
     def _scale_data(self):
         price_cols = ['open', 'high', 'low', 'close']
-        volume_cols = ['volume', 'volume_ma', 'liquidity']
-        indicator_cols = ['rsi', 'macd', 'volatility', 'returns', 'obv', 'price_spread']
+        volume_cols = ['volume', 'volume_zscore', 'liquidity']
+        indicator_cols = ['rsi', 'macd', 'volatility', 'log_returns', 'obv', 'price_spread', 'atr', 'momentum_5_20']
         
         # Scale từng nhóm features
         scaled_data = pd.DataFrame(index=self.data.index)
@@ -113,18 +128,24 @@ class CryptoDataset(Dataset):
         scaled_data[indicator_cols] = self.scalers['indicators'].transform(self.data[indicator_cols])
         
         self.scaled_data = scaled_data.values
+        self.feature_names = price_cols + volume_cols + indicator_cols
 
     def __len__(self):
         return len(self.data) - self.seq_len - self.pred_len + 1
 
     def __getitem__(self, idx: int) -> dict:
-        # Lấy dữ liệu theo sequence
+
         start_idx = idx
         end_idx = idx + self.seq_len
         pred_end_idx = end_idx + self.pred_len 
         
         x = self.scaled_data[start_idx:end_idx]
-        y = self.scaled_data[end_idx:pred_end_idx, self.data.columns.get_loc('close')]
+        y = self.scaled_data[end_idx:pred_end_idx, self.feature_names.index('close')]
+        
+        # Thêm noise ngẫu nhiên khi train để tăng tính tổng quát
+        if self.train and not self.test_mode:
+            noise = np.random.normal(0, 0.01, size=x.shape)
+            x = x + noise
         
         return {
             'x': torch.FloatTensor(x),  # [seq_len, num_features]
@@ -147,16 +168,24 @@ class CryptoDataLoader:
             train=True
         )
         
-        # Split data
-        split_idx = int(len(full_data) * self.config['data']['train_ratio'])
-        self.train_data = torch.utils.data.Subset(full_data, range(split_idx))
-        self.test_data = torch.utils.data.Subset(full_data, range(split_idx, len(full_data)))
+        # Cải tiến cách chia dữ liệu với stratified time sampling
+        time_groups = pd.qcut(full_data.data.index.astype(np.int64), 
+                            q=10, 
+                            labels=False)[:len(full_data)]
+        train_idx, test_idx = train_test_split(
+            np.arange(len(full_data)),
+            test_size=1 - self.config['data']['train_ratio'],
+            stratify=time_groups
+        )
+        
+        self.train_data = torch.utils.data.Subset(full_data, train_idx)
+        self.test_data = torch.utils.data.Subset(full_data, test_idx)
         
         # Lưu scalers và feature names
         self.scalers = full_data.scalers
-        self.feature_names = full_data.data.columns.tolist()
+        self.feature_names = full_data.feature_names
         
-        # Tạo data loaders
+        # Tạo data loaders với cải tiến
         self.batch_size = self.config['training']['batch_size']
         self.train_loader = self._create_loader(self.train_data, shuffle=True)
         self.test_loader = self._create_loader(self.test_data, shuffle=False)
@@ -166,7 +195,8 @@ class CryptoDataLoader:
             dataset,
             batch_size=self.batch_size,
             shuffle=shuffle,
-            num_workers=4,
+            num_workers=2,  
             pin_memory=torch.cuda.is_available(),
-            persistent_workers=True
+            persistent_workers=True,
+            drop_last=True  # Bỏ batch cuối nếu không đủ size
         )
