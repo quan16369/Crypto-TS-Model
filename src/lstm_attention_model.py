@@ -7,12 +7,14 @@ class LSTMAttentionModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         self.config = config['model']
+        self.dropout_rate = config['model'].get('dropout', 0.3)
         
         # Input projection layer
         self.input_proj = nn.Sequential(
             nn.Linear(self.config['enc_in'], self.config['d_model']),
             nn.BatchNorm1d(self.config['d_model']),
-            nn.Dropout(self.config.get('dropout', 0.2))
+            nn.Dropout(self.dropout_rate), 
+            nn.LeakyReLU(0.1) 
         )
         
         # LSTM layer
@@ -21,7 +23,7 @@ class LSTMAttentionModel(nn.Module):
             hidden_size=self.config['d_model'],
             num_layers=2,
             batch_first=True,
-            dropout=self.config.get('dropout', 0.2)
+            dropout=self.config.get('dropout', 0.3)
         )
         
         # Attention mechanism
