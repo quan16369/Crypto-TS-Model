@@ -3,77 +3,56 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any
 
-class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, n_heads):
-        super().__init__()
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
-        
-        self.q_linear = nn.Linear(d_model, d_model)
-        self.k_linear = nn.Linear(d_model, d_model)
-        self.v_linear = nn.Linear(d_model, d_model)
-        self.out_linear = nn.Linear(d_model, d_model)
-        
-    def forward(self, x):
-        B, T, _ = x.shape
-        q = self.q_linear(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        k = self.k_linear(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        v = self.v_linear(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        
-        attn_scores = (q @ k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim))
-        attn_weights = F.softmax(attn_scores, dim=-1)
-        output = (attn_weights @ v).transpose(1, 2).contiguous().view(B, T, -1)
-        
-        return self.out_linear(output)
-
 class LSTMAttentionModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         self.config = config['model']
-        self.device = torch.device(config['training']['device'])
         
-        # Input projection (thay thế cho embedding)
+        # Input projection layer với BatchNorm
         self.input_proj = nn.Sequential(
             nn.Linear(self.config['enc_in'], self.config['d_model']),
-            nn.LayerNorm(self.config['d_model']),
-            nn.Dropout(self.config.get('dropout', 0.1))
+            nn.BatchNorm1d(self.config['d_model']),
+            nn.Dropout(self.config.get('dropout', 0.2))
         )
         
-        # LSTM
-        self.lstm = nn.LSTM(
+        # Bidirectional LSTM với 2 layers
+        self.bilstm = nn.LSTM(
             input_size=self.config['d_model'],
-            hidden_size=self.config['d_model'],
-            num_layers=self.config['e_layers'],
+            hidden_size=self.config['d_model']//2,  # Chia 2 do dùng bidirectional
+            num_layers=2,  
             batch_first=True,
-            dropout=self.config.get('dropout', 0.1) if self.config['e_layers'] > 1 else 0
+            bidirectional=True,
+            dropout=self.config.get('dropout', 0.2)
         )
         
-        # Attention
-        self.attention = MultiHeadAttention(
-            d_model=self.config['d_model'],
-            n_heads=self.config['n_heads']
+        # Attention mechanism
+        self.attention = nn.Sequential(
+            nn.Linear(self.config['d_model'], self.config['d_model']),
+            nn.Tanh(),
+            nn.Linear(self.config['d_model'], 1, bias=False)
         )
         
-        # Predictor
-        self.predictor = nn.Sequential(
-            nn.Linear(self.config['d_model'], self.config.get('d_ff', 512)),
-            nn.GELU(),
-            nn.Dropout(self.config.get('dropout', 0.1)),
-            nn.Linear(self.config.get('d_ff', 512), self.config['c_out'] * self.config['pred_len']),
-            nn.Unflatten(-1, (self.config['pred_len'], self.config['c_out']))
+        # Output layers 
+        self.output = nn.Sequential(
+            nn.Linear(self.config['d_model'], self.config['d_model']),
+            nn.BatchNorm1d(self.config['d_model']),
+            nn.ReLU(),
+            nn.Dropout(self.config.get('dropout', 0.2)),
+            nn.Linear(self.config['d_model'], self.config['c_out'])
         )
 
-    def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
-        # 1. Project input features
-        x = self.input_proj(x_enc)
+    def forward(self, x):
+        # Input projection
+        x = self.input_proj(x.reshape(-1, x.size(-1))).reshape(x.size(0), -1, self.config['d_model'])
         
-        # 2. LSTM processing
-        lstm_out, _ = self.lstm(x)
+        # BiLSTM processing
+        lstm_out, _ = self.bilstm(x)  # [batch, seq_len, d_model]
         
-        # 3. Attention
-        attn_out = self.attention(lstm_out)
+        # Attention mechanism
+        attn_weights = F.softmax(self.attention(lstm_out), dim=1)  # [batch, seq_len, 1]
+        context = torch.sum(attn_weights * lstm_out, dim=1)  # [batch, d_model]
         
-        # 4. Prediction
-        pred = self.predictor(attn_out[:, -self.config['pred_len']:, :])
-        return pred
+        # Output prediction
+        pred = self.output(context)  # [batch, c_out]
+        
+        return pred.unsqueeze(1)  # [batch, 1, c_out] để phù hợp với pred_len
