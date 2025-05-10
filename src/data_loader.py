@@ -121,14 +121,14 @@ class CryptoDataset(Dataset):
         # Lấy dữ liệu theo sequence
         start_idx = idx
         end_idx = idx + self.seq_len
-        pred_end_idx = end_idx + self.pred_len
+        pred_end_idx = end_idx + self.pred_len 
         
         x = self.scaled_data[start_idx:end_idx]
         y = self.scaled_data[end_idx:pred_end_idx, self.data.columns.get_loc('close')]
         
         return {
-            'x': torch.FloatTensor(x),
-            'y': torch.FloatTensor(y)
+            'x': torch.FloatTensor(x),  # [seq_len, num_features]
+            'y': torch.FloatTensor(y).unsqueeze(-1)  # [pred_len, 1]
         }
 
 class CryptoDataLoader:
