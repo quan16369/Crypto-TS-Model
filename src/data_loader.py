@@ -100,35 +100,55 @@ class CryptoDataset(Dataset):
         # Momentum features 
         df['momentum_5_20'] = df['close'].rolling(5).mean() - df['close'].rolling(20).mean()
         
+        # Time-based features
+        df['hour'] = df.index.hour
+        df['dayofweek'] = df.index.dayofweek
+        df['day'] = df.index.day
+        df['month'] = df.index.month
+        df['is_weekend'] = df['dayofweek'].isin([5, 6]).astype(int)
+        df['is_month_start'] = df.index.is_month_start.astype(int)
+        df['is_quarter_end'] = df.index.is_quarter_end.astype(int)
+        
+        # Encode cyclical time features
+        df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
+        df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
+        df['dow_sin'] = np.sin(2 * np.pi * df['dayofweek'] / 7)
+        df['dow_cos'] = np.cos(2 * np.pi * df['dayofweek'] / 7)
+
         return df.dropna()
 
     def _fit_scalers(self):
         if not self.train:
             return
-            
+        
         # Nhóm các features để scale với logic mới
         price_cols = ['open', 'high', 'low', 'close']
         volume_cols = ['volume', 'volume_zscore', 'liquidity']
         indicator_cols = ['rsi', 'macd', 'volatility', 'log_returns', 'obv', 'price_spread', 'atr', 'momentum_5_20']
+        time_cols = ['hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_weekend', 'is_month_start', 'is_quarter_end']
         
         # Fit scalers với data đã được xử lý outlier
         self.scalers['price'].fit(self.data[price_cols])
         self.scalers['volume'].fit(self.data[volume_cols])
         self.scalers['indicators'].fit(self.data[indicator_cols])
+        self.scalers['time'] = MinMaxScaler()
+        self.scalers['time'].fit(self.data[time_cols])  # Fit cho các time-based features
 
     def _scale_data(self):
         price_cols = ['open', 'high', 'low', 'close']
         volume_cols = ['volume', 'volume_zscore', 'liquidity']
         indicator_cols = ['rsi', 'macd', 'volatility', 'log_returns', 'obv', 'price_spread', 'atr', 'momentum_5_20']
+        time_cols = ['hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_weekend', 'is_month_start', 'is_quarter_end']
         
         # Scale từng nhóm features
         scaled_data = pd.DataFrame(index=self.data.index)
         scaled_data[price_cols] = self.scalers['price'].transform(self.data[price_cols])
         scaled_data[volume_cols] = self.scalers['volume'].transform(self.data[volume_cols])
         scaled_data[indicator_cols] = self.scalers['indicators'].transform(self.data[indicator_cols])
+        scaled_data[time_cols] = self.scalers['time'].transform(self.data[time_cols])  # Scale time features
         
         self.scaled_data = scaled_data.values
-        self.feature_names = price_cols + volume_cols + indicator_cols
+        self.feature_names = price_cols + volume_cols + indicator_cols + time_cols
 
     def __len__(self):
         return len(self.data) - self.seq_len - self.pred_len + 1
