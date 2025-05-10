@@ -139,12 +139,13 @@ def train(config_path: str = 'configs/train_config.yaml'):
             model = LSTMWithCNNAttention(config_dict).to(config.device)
         else:
             model = LSTMModel(config_dict).to(config.device)
-        print(model_type)
+
         optimizer = torch.optim.Adam(
                                         model.parameters(), 
                                         lr=config.lr, 
                                         weight_decay=0.001  
         )
+
         scheduler = scheduler = torch.optim.lr_scheduler.CyclicLR(
                                         optimizer, 
                                         base_lr=1e-4, 
@@ -184,7 +185,10 @@ def train(config_path: str = 'configs/train_config.yaml'):
                     time_features = time_features.to(config.device) if time_features is not None else None
                     
                     optimizer.zero_grad()
-                    pred = model(x, time_features)
+                    if time_features is not None:
+                        pred = model(x, time_features)  
+                    else:
+                        pred = model(x)  
                     loss = F.mse_loss(pred, y)
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
