@@ -73,22 +73,22 @@ def evaluate(model, data_loader, device):
     mse = mean_squared_error(targets, preds)
     mae = mean_absolute_error(targets, preds)
     rmse = np.sqrt(mse)
-    mape = np.mean(np.abs((targets - preds) / (targets + 1e-8))) * 100
+    smape = 100 * np.mean(2.0 * np.abs(preds - targets) / (np.abs(preds) + np.abs(targets) + 1e-8))
     r2 = r2_score(targets, preds)
 
-    print(f"[Eval] MSE: {mse:.4f} | MAE: {mae:.4f} | RMSE: {rmse:.4f} | MAPE: {mape:.2f}% | R2: {r2:.4f}")
+    print(f"[Eval] MSE: {mse:.4f} | MAE: {mae:.4f} | RMSE: {rmse:.4f} | SMAPE: {smape:.2f}% | R2: {r2:.4f}")
     
     return mse
 
 def find_latest_checkpoint(checkpoint_dir):
-    """Tìm checkpoint mới nhất trong thư mục"""
+    
     checkpoints = glob.glob(os.path.join(checkpoint_dir, '*/epoch_*.pt'))
     if not checkpoints:
         return None
     return max(checkpoints, key=os.path.getctime)
 
 def load_checkpoint(model, optimizer, scheduler, checkpoint_path, device):
-    """Tải checkpoint và khôi phục trạng thái"""
+    
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     
@@ -105,7 +105,7 @@ def load_checkpoint(model, optimizer, scheduler, checkpoint_path, device):
     }
 
 def save_checkpoint(state, filename):
-    """Lưu checkpoint"""
+    
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     torch.save(state, filename)
     logger.info(f"Checkpoint saved to {filename}")
