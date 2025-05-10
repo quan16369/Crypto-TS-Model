@@ -139,7 +139,8 @@ def train(config_path: str = 'configs/train_config.yaml'):
             model = LSTMWithCNNAttention(config_dict).to(config.device)
         else:
             model = LSTMModel(config_dict).to(config.device)
-
+        print(model_type)
+        
         optimizer = torch.optim.Adam(
                                         model.parameters(), 
                                         lr=config.lr, 
