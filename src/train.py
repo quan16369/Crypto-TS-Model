@@ -61,13 +61,14 @@ def evaluate(model, data_loader, device):
             time_features = batch.get('time_features', None)
             time_features = time_features.to(device) if time_features is not None else None
 
-            pred = model(x, time_features)
+            pred = model(x, time_features)  # [batch, pred_len, 1]
+            
+            # Chuyển về numpy và reshape
+            preds.append(pred.cpu().numpy().reshape(-1))  # Flatten thành 1D
+            targets.append(y.cpu().numpy().reshape(-1))   # Flatten thành 1D
 
-            preds.append(pred.cpu().numpy())
-            targets.append(y.cpu().numpy())
-
-    preds = np.concatenate(preds, axis=0)
-    targets = np.concatenate(targets, axis=0)
+    preds = np.concatenate(preds)
+    targets = np.concatenate(targets)
 
     mse = mean_squared_error(targets, preds)
     mae = mean_absolute_error(targets, preds)
@@ -77,7 +78,7 @@ def evaluate(model, data_loader, device):
 
     print(f"[Eval] MSE: {mse:.4f} | MAE: {mae:.4f} | RMSE: {rmse:.4f} | MAPE: {mape:.2f}% | R2: {r2:.4f}")
     
-    return mse  
+    return mse
 
 def find_latest_checkpoint(checkpoint_dir):
     """Tìm checkpoint mới nhất trong thư mục"""
