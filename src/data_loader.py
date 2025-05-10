@@ -126,24 +126,9 @@ class CryptoDataset(Dataset):
         x = self.scaled_data[start_idx:end_idx]
         y = self.scaled_data[end_idx:pred_end_idx, self.data.columns.get_loc('close')]
         
-        # Tạo time features
-        timestamps = self.data.index[start_idx:end_idx]
-        hour_sin = np.sin(2 * np.pi * timestamps.hour / 23)
-        hour_cos = np.cos(2 * np.pi * timestamps.hour / 23)
-        minute_sin = np.sin(2 * np.pi * timestamps.minute / 59)
-        
-        time_features = np.column_stack([
-            hour_sin,
-            hour_cos,
-            minute_sin,
-            timestamps.dayofweek / 6
-        ])
-        
         return {
             'x': torch.FloatTensor(x),
-            'y': torch.FloatTensor(y),
-            'time_features': torch.FloatTensor(time_features),
-            'actuals': torch.FloatTensor(self.data.iloc[start_idx:end_idx]['close'].values)
+            'y': torch.FloatTensor(y)
         }
 
 class CryptoDataLoader:
