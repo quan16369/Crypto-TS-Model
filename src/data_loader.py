@@ -59,7 +59,7 @@ class CryptoDataset(Dataset):
         df['volume'] = df['volume'].fillna(df['volume'].rolling(12, min_periods=1).median())
         
         # Clip outliers cho các cột quan trọng
-        for col in ['close', 'volume', 'returns']:
+        for col in ['close', 'volume']:
             q1 = df[col].quantile(0.01)
             q3 = df[col].quantile(0.99)
             df[col] = df[col].clip(lower=q1, upper=q3)
