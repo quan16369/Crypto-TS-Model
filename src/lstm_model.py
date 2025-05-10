@@ -28,8 +28,7 @@ class LSTMModel(nn.Module):
         self.output_net = nn.Sequential(
             nn.Linear(self.config['d_model'], self.config['d_model']),
             nn.SiLU(),
-            nn.Linear(self.config['d_model'], self.config['pred_len'] * self.config['c_out']),
-            nn.Unflatten(-1, (self.config['pred_len'], self.config['c_out']))
+            nn.Linear(self.config['d_model'], self.config['pred_len']),
         )
 
     def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
@@ -51,6 +50,6 @@ class LSTMModel(nn.Module):
         last_hidden = lstm_out[:, -1, :]  # Shape: [batch_size, d_model]
         
         # 4. Prediction
-        pred = self.output_net(last_hidden)  # Shape: [batch_size, pred_len, c_out]
+        pred = self.output_net(last_hidden)  # Shape: [batch_size, pred_len]
         
-        return pred.squeeze(-1)  # Remove last dim if c_out=1
+        return pred.unsqueeze(-1)  #  [batch_size, pred_len, 1]
