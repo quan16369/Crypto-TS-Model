@@ -12,8 +12,8 @@ class LSTMModel(nn.Module):
             nn.Linear(self.config['enc_in'], self.config['d_model']),
             nn.GELU(),
             nn.LayerNorm(self.config['d_model']),
-            nn.Dropout(self.config.get('dropout', 0.2))
-        )
+            nn.Dropout(self.config.get('dropout', 0.3))
+        )   
         
         # 2. LSTM 
         self.lstm = nn.LSTM(
@@ -21,10 +21,10 @@ class LSTMModel(nn.Module):
             hidden_size=self.config['d_model'],
             num_layers=self.config['e_layers'],
             batch_first=True,
-            dropout=self.config.get('dropout', 0.2) if self.config['e_layers'] > 1 else 0
+            dropout=self.config.get('dropout', 0.3) if self.config['e_layers'] > 1 else 0
         )
         
-        # 3. Output Network - Đảm bảo đầu ra có kích thước pred_len
+        # 3. Output Network 
         self.output_net = nn.Sequential(
             nn.Linear(self.config['d_model'], self.config['d_model']),
             nn.SiLU(),
@@ -33,16 +33,24 @@ class LSTMModel(nn.Module):
         )
 
     def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
+        # Get original shape
+        batch_size, seq_len, _ = x_enc.shape
+        
         # 1. Feature projection
-        x = self.input_net(x_enc)
+        # Reshape to combine batch and sequence dimensions for linear layer
+        x = x_enc.reshape(-1, x_enc.size(-1))  # [batch*seq_len, num_features]
+        x = self.input_net(x)
+        
+        # Reshape back for LSTM
+        x = x.reshape(batch_size, seq_len, -1)  # [batch, seq_len, d_model]
         
         # 2. LSTM processing
         lstm_out, _ = self.lstm(x)
         
-        # 3. Lấy hidden state cuối cùng
+        # 3. Get last hidden state
         last_hidden = lstm_out[:, -1, :]  # Shape: [batch_size, d_model]
         
-        # 4. Dự đoán
+        # 4. Prediction
         pred = self.output_net(last_hidden)  # Shape: [batch_size, pred_len, c_out]
         
-        return pred.squeeze(-1)  # Loại bỏ chiều cuối nếu c_out=1
+        return pred.squeeze(-1)  # Remove last dim if c_out=1
