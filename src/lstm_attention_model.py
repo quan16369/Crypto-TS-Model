@@ -39,18 +39,20 @@ class LSTMAttentionModel(nn.Module):
         )
 
     def forward(self, x, time_features=None):
-        # Input projection
+        # Input shape: [batch, seq_len, enc_in]
         B, T, _ = x.shape
+        
+        # Project input
         x = self.input_proj(x.reshape(-1, x.size(-1))).reshape(B, T, -1)
         
         # LSTM processing
         lstm_out, _ = self.lstm(x)  # [batch, seq_len, d_model]
         
-        # Attention mechanism
+        # Attention
         attn_weights = F.softmax(self.attention(lstm_out), dim=1)  # [batch, seq_len, 1]
         context = torch.sum(attn_weights * lstm_out, dim=1)  # [batch, d_model]
         
-        # Output prediction - [batch, pred_len]
-        pred = self.output(context)
+        # Output projection - đảm bảo output [batch, pred_len]
+        pred = self.output(context).unsqueeze(-1)  # [batch, pred_len, 1]
         
-        return pred.unsqueeze(-1)  # [batch, pred_len, 1]
+        return pred
