@@ -142,17 +142,19 @@ def train(config_path: str = 'configs/train_config.yaml'):
             model = LSTMModel(config_dict).to(config.device)
         print(model_type)
         
-        optimizer = torch.optim.Adam(
-                                        model.parameters(), 
-                                        lr=config.lr, 
-                                        weight_decay=0.001  
-        )
+        optimizer = torch.optim.AdamW(  
+                                        model.parameters(),
+                                        lr=config.lr,
+                                        betas=(0.9, 0.98),
+                                        eps=1e-9
+                                    )
 
-        scheduler = scheduler = torch.optim.lr_scheduler.CyclicLR(
-                                        optimizer, 
-                                        base_lr=1e-4, 
-                                        max_lr=1e-3,
-                                        step_size_up=500
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                                        optimizer,
+                                        max_lr=config.lr,
+                                        steps_per_epoch=len(train_loader),
+                                        epochs=config.epochs,
+                                        pct_start=0.3
                                     )
         
         # 5. Resume training nếu có
