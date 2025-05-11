@@ -62,16 +62,20 @@ class LSTMAttentionModel(nn.Module):
         attn_weights = F.softmax(x.mean(dim=-1), dim=1)  # [B, T]
         pooled = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)  # [B, D]
         return pooled
-
+    
     def forward(self, x, time_features=None):
-        # x: [B, T, enc_in]
+        B, T, _ = x.shape
+        
+        # Causal mask
+        mask = torch.triu(torch.ones(T, T), diagonal=1).bool().to(x.device)  # [T, T]
         
         x = self.input_proj(x)             # [B, T, d_model]
         x = self.pos_encoder(x)            # [B, T, d_model]
         lstm_out, _ = self.lstm(x)         # [B, T, d_model]
-
-        attn_out, _ = self.attn(lstm_out, lstm_out, lstm_out)  # [B, T, d_model]
+        
+        # add mask attention
+        attn_out, _ = self.attn(lstm_out, lstm_out, lstm_out, attn_mask=mask)  # [B, T, d_model]
+        
         context = self.attention_weighted_pooling(attn_out)   # [B, d_model]
-
         out = self.output_proj(context)    # [B, pred_len * out_dim]
         return out.view(-1, self.pred_len, self.out_dim)      # [B, pred_len, out_dim]
