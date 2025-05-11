@@ -188,7 +188,7 @@ class CryptoDataLoader:
             train=True
         )
         
-        # Chia dữ liệu theo thời gian (không dùng stratified sampling)
+        # Chia dữ liệu theo thời gian
         split_idx = int(len(full_data) * self.config['data']['train_ratio'])
         train_idx = np.arange(split_idx)
         test_idx = np.arange(split_idx, len(full_data))
