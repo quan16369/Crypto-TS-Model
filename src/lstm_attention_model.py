@@ -28,7 +28,7 @@ class LSTMAttentionModel(nn.Module):
         self.out_dim = model_cfg.get('output_dim', 1)
         self.dropout_rate = model_cfg.get('dropout', 0.3)
 
-        input_dim = enc_in + self.time_feat_dim
+        input_dim = enc_in 
 
         # Input projection
         self.input_proj = nn.Sequential(
