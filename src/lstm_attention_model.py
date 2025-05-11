@@ -64,8 +64,8 @@ class LSTMAttentionModel(nn.Module):
         return pooled
 
     def forward(self, x, time_features=None):
-        # x: [B, T, enc_in], time_features: [B, T, time_feat_dim]
-
+        # x: [B, T, enc_in]
+        
         x = self.input_proj(x)             # [B, T, d_model]
         x = self.pos_encoder(x)            # [B, T, d_model]
         lstm_out, _ = self.lstm(x)         # [B, T, d_model]
