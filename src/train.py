@@ -11,6 +11,7 @@ from lstm_attention_model import LSTMAttentionModel
 from lstm_model import LSTMModel
 from cnn_lstm_model import CNNLSTMModel
 from cnn_lstm_attention_model import LSTMWithCNNAttention
+from lstm_flashattention_model import LSTMFlashAttentionModel
 from data_loader import CryptoDataLoader
 from utils import TrainingTracker, EarlyStopper
 from metrics import CryptoMetrics 
@@ -138,6 +139,8 @@ def train(config_path: str = 'configs/train_config.yaml'):
             model = CNNLSTMModel(config_dict).to(config.device)
         elif model_type == 'cnn_lstm_attention':
             model = LSTMWithCNNAttention(config_dict).to(config.device)
+        elif model_type == 'lstm_flashattenion':
+            model = LSTMFlashAttentionModel(config_dict).to(config.device)
         else:
             model = LSTMModel(config_dict).to(config.device)
         print(model_type)
