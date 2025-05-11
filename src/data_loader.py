@@ -36,7 +36,7 @@ class CryptoDataset(Dataset):
         self._scale_data()
 
     def _load_and_clean(self, path: str) -> pd.DataFrame:
-        """Cải tiến quá trình làm sạch dữ liệu"""
+
         df = pd.read_csv(path, float_precision='high')
         
         # Chuẩn hóa tên cột
@@ -188,15 +188,10 @@ class CryptoDataLoader:
             train=True
         )
         
-        # Cải tiến cách chia dữ liệu với stratified time sampling
-        time_groups = pd.qcut(full_data.data.index.astype(np.int64), 
-                            q=10, 
-                            labels=False)[:len(full_data)]
-        train_idx, test_idx = train_test_split(
-            np.arange(len(full_data)),
-            test_size=1 - self.config['data']['train_ratio'],
-            stratify=time_groups
-        )
+        # Chia dữ liệu theo thời gian (không dùng stratified sampling)
+        split_idx = int(len(full_data) * self.config['data']['train_ratio'])
+        train_idx = np.arange(split_idx)
+        test_idx = np.arange(split_idx, len(full_data))
         
         self.train_data = torch.utils.data.Subset(full_data, train_idx)
         self.test_data = torch.utils.data.Subset(full_data, test_idx)
