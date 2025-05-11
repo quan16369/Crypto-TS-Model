@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any
 
+
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=500):
         super().__init__()
@@ -14,21 +15,19 @@ class PositionalEncoding(nn.Module):
         self.pe = pe.unsqueeze(0)  # [1, max_len, d_model]
 
     def forward(self, x):
-        # x: [B, T, D]
-        x = x + self.pe[:, :x.size(1)].to(x.device)
-        return x
+        return x + self.pe[:, :x.size(1)].to(x.device)
 
 
 class LSTMAttentionModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
-        self.config = config['model']
-        self.dropout_rate = self.config.get('dropout', 0.3)
-        d_model = self.config['d_model']
-        enc_in = self.config['enc_in']
+        model_cfg = config['model']
+        d_model = model_cfg['d_model']
+        enc_in = model_cfg['enc_in']
+        self.pred_len = model_cfg['pred_len']
+        self.out_dim = model_cfg.get('output_dim', 1)
+        self.dropout_rate = model_cfg.get('dropout', 0.3)
 
-        # Optional time feature size
-        self.time_feat_dim = self.config.get('time_feat_dim', 0)
         input_dim = enc_in + self.time_feat_dim
 
         # Input projection
@@ -39,10 +38,8 @@ class LSTMAttentionModel(nn.Module):
             nn.GELU()
         )
 
-        # Positional encoding
         self.pos_encoder = PositionalEncoding(d_model)
 
-        # LSTM layer
         self.lstm = nn.LSTM(
             input_size=d_model,
             hidden_size=d_model,
@@ -51,34 +48,30 @@ class LSTMAttentionModel(nn.Module):
             dropout=self.dropout_rate
         )
 
-        # Multi-Head Self-Attention
         self.attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=4, batch_first=True)
 
-        # Output projection
-        self.output = nn.Sequential(
+        self.output_proj = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.GELU(),
             nn.Dropout(self.dropout_rate),
-            nn.Linear(d_model, self.config['pred_len'])
+            nn.Linear(d_model, self.pred_len * self.out_dim)
         )
+
+    def attention_weighted_pooling(self, x):
+        # x: [B, T, D]
+        attn_weights = F.softmax(x.mean(dim=-1), dim=1)  # [B, T]
+        pooled = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)  # [B, D]
+        return pooled
 
     def forward(self, x, time_features=None):
         # x: [B, T, enc_in], time_features: [B, T, time_feat_dim]
-        B, T, _ = x.shape
 
-        if time_features is not None:
-            x = torch.cat([x, time_features], dim=-1)  # [B, T, enc_in + time_feat_dim]
+        x = self.input_proj(x)             # [B, T, d_model]
+        x = self.pos_encoder(x)            # [B, T, d_model]
+        lstm_out, _ = self.lstm(x)         # [B, T, d_model]
 
-        x = self.input_proj(x)  # [B, T, d_model]
-        x = self.pos_encoder(x)  # [B, T, d_model]
-
-        lstm_out, _ = self.lstm(x)  # [B, T, d_model]
-
-        # Self-attention
         attn_out, _ = self.attn(lstm_out, lstm_out, lstm_out)  # [B, T, d_model]
+        context = self.attention_weighted_pooling(attn_out)   # [B, d_model]
 
-        # Context vector via mean pooling (or attn-weighted sum)
-        context = torch.mean(attn_out, dim=1)  # [B, d_model]
-
-        out = self.output(context)  # [B, pred_len]
-        return out.unsqueeze(-1)  # [B, pred_len, 1]
+        out = self.output_proj(context)    # [B, pred_len * out_dim]
+        return out.view(-1, self.pred_len, self.out_dim)      # [B, pred_len, out_dim]
