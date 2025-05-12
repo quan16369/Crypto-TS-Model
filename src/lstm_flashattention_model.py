@@ -70,7 +70,7 @@ class LSTMFlashAttentionModel(nn.Module):
         self.lstm = nn.LSTM(
             input_size=d_model,
             hidden_size=d_model,
-            num_layers=2,
+            num_layers=4,
             batch_first=True,
             dropout=self.dropout_rate
         )
