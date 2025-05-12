@@ -146,20 +146,21 @@ def train(config_path: str = 'configs/train_config.yaml'):
         print(model_type)
         
         optimizer = torch.optim.AdamW(  
-                                        model.parameters(),
-                                        lr=config.lr,
-                                        betas=(0.9, 0.98),
-                                        eps=1e-9
-                                    )
+            model.parameters(),
+            lr=config.lr,
+            betas=(0.9, 0.98),
+            eps=1e-9,
+            weight_decay=1e-4  # L2 regularization
+        )
 
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                                        optimizer,
-                                        max_lr=config.lr,
-                                        steps_per_epoch=len(train_loader),
-                                        epochs=config.epochs,
-                                        pct_start=0.3
-                                    )
-        
+            optimizer,
+            max_lr=config.lr * 0.5, 
+            steps_per_epoch=len(train_loader),
+            epochs=config.epochs,
+            pct_start=0.1  
+        )
+
         # 5. Resume training nếu có
         start_epoch = 0
         best_loss = float('inf')
