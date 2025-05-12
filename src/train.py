@@ -141,6 +141,8 @@ def train(config_path: str = 'configs/train_config.yaml'):
             model = LSTMWithCNNAttention(config_dict).to(config.device)
         elif model_type == 'lstm_flashattenion':
             model = LSTMFlashAttentionModel(config_dict).to(config.device)
+        elif model_type == 'lstm_attenion_hybrid':
+            model = LSTMFlashAttentionModel(config_dict).to(config.device)
         else:
             model = LSTMModel(config_dict).to(config.device)
         print(model_type)
