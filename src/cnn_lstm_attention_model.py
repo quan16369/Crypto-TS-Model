@@ -32,10 +32,10 @@ class CNNFeatureExtractor(nn.Module):
         )
         
     def forward(self, x):
-        # x: [B, T, D] -> [B, D, T] cho Conv1d
+        # x: [B, T, D] -> [B, D, T]  Conv1d
         x = x.permute(0, 2, 1)
         x = self.conv_blocks(x)
-        return x.permute(0, 2, 1)  # Trả về [B, T', D']
+        return x.permute(0, 2, 1)  # [B, T', D']
 
 class LSTMCNNAttentionModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
@@ -106,7 +106,7 @@ class LSTMCNNAttentionModel(nn.Module):
         # 3. LSTM Processing
         lstm_out, _ = self.lstm(x)
         
-        # 4. Multihead Attention với Causal Mask
+        # 4. Multihead Attention with Causal Mask
         mask = torch.triu(torch.ones(x.size(1), x.size(1)), diagonal=1).bool().to(x.device)
         attn_out, _ = self.self_attn(
             query=lstm_out,
@@ -116,7 +116,7 @@ class LSTMCNNAttentionModel(nn.Module):
         )
         attn_out = self.attn_norm(lstm_out + attn_out)  # Add & Norm
         
-        # 5. Context Pooling với Residual
+        # 5. Context Pooling with Residual
         context = self.attention_weighted_pooling(attn_out)
         context = context + self.residual1(context)
         
