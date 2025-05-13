@@ -13,6 +13,7 @@ from cnn_lstm_model import CNNLSTMModel
 from cnn_lstm_attention_model import LSTMCNNAttentionModel
 from lstm_attention_hybrid_model import LSTMAttentionHybrid
 from data_loader import CryptoDataLoader
+from ms_hitt import MSHiTT
 from utils import TrainingTracker, EarlyStopper
 import torch.nn.functional as F
 from typing import Dict, Any
@@ -159,8 +160,8 @@ def train(config_path: str = 'configs/train_config.yaml'):
         model_type = config_dict['model'].get('model_type', 'lstm').lower()
         if model_type == 'lstm_attention':
             model = LSTMAttentionModel(config_dict).to(config.device)
-        elif model_type == 'rwkv':
-            model = CryptoRWKV_TS(config_dict).to(config.device)
+        elif model_type == 'ms_hitt':
+            model = MSHiTT(config_dict).to(config.device)
         elif model_type == 'cnn_lstm':
             model = CNNLSTMModel(config_dict).to(config.device)
         elif model_type == 'cnn_lstm_attention':
