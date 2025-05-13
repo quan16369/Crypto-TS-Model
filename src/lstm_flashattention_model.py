@@ -55,9 +55,13 @@ class LSTMFlashAttentionModel(nn.Module):
         self.pred_len = model_cfg['pred_len']
         self.out_dim = model_cfg.get('output_dim', 1)
         self.dropout_rate = model_cfg.get('dropout', 0.3)
-
+        
+       
+        self.num_heads = model_cfg.get('n_heads', 4)
+        
         input_dim = enc_in
 
+        # Input projection 
         self.input_proj = nn.Sequential(
             nn.Linear(input_dim, d_model),
             nn.LayerNorm(d_model),
@@ -67,35 +71,58 @@ class LSTMFlashAttentionModel(nn.Module):
 
         self.pos_encoder = PositionalEncoding(d_model)
 
+        # LSTM 
         self.lstm = nn.LSTM(
             input_size=d_model,
             hidden_size=d_model,
-            num_layers=4,
+            num_layers=2,
             batch_first=True,
             dropout=self.dropout_rate
         )
 
-        self.attn = FlashAttentionBlock(d_model, num_heads=4)
-
-        self.output_proj = nn.Sequential(
+        # FlashAttention Block 
+        self.attn = FlashAttentionBlock(d_model, self.num_heads)
+        
+        # Layer norm and residual 
+        self.attn_norm = nn.LayerNorm(d_model)
+        self.residual = nn.Sequential(
             nn.Linear(d_model, d_model),
+            nn.Dropout(self.dropout_rate)
+        )
+
+        # Output projection 
+        self.output_proj = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),  
             nn.GELU(),
             nn.Dropout(self.dropout_rate),
-            nn.Linear(d_model, self.pred_len * self.out_dim)
+            nn.Linear(d_model * 2, self.pred_len * self.out_dim)
         )
 
     def attention_weighted_pooling(self, x):
-        attn_weights = F.softmax(x.mean(dim=-1), dim=1)  # [B, T]
-        pooled = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)  # [B, D]
+        
+        attn_weights = F.softmax(x.mean(dim=-1), dim=1)
+        attn_weights = F.dropout(attn_weights, p=self.dropout_rate, training=self.training)
+        pooled = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)
         return pooled
 
     def forward(self, x, time_features=None):
-        x = self.input_proj(x)             # [B, T, d_model]
-        x = self.pos_encoder(x)            # [B, T, d_model]
-        lstm_out, _ = self.lstm(x)         # [B, T, d_model]
-
-        attn_out = self.attn(lstm_out)     # [B, T, d_model]
-        context = self.attention_weighted_pooling(attn_out)   # [B, d_model]
-
-        out = self.output_proj(context)    # [B, pred_len * out_dim]
-        return out.view(-1, self.pred_len, self.out_dim)  # [B, pred_len, out_dim]
+        B, T, _ = x.shape
+        
+        # Input processing
+        x = self.input_proj(x)
+        x = self.pos_encoder(x)
+        
+        # LSTM processing
+        lstm_out, _ = self.lstm(x)
+        
+        # FlashAttention and residual connection
+        attn_out = self.attn(lstm_out)
+        attn_out = self.attn_norm(lstm_out + attn_out)  # Add & Norm
+        
+        # Context pooling and residual
+        context = self.attention_weighted_pooling(attn_out)
+        context = context + self.residual(context)  # Skip connection
+        
+        # Output
+        out = self.output_proj(context)
+        return out.view(-1, self.pred_len, self.out_dim)
