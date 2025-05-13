@@ -297,16 +297,16 @@ def train(config_path: str = 'configs/train_config.yaml'):
                 break
 
         # 9. Visualize kết quả
-        plt.figure(figsize=(12, 6))
-        plt.plot(tracker.train_losses, label='Training Loss')
-        plt.plot(tracker.val_losses, label='Validation Loss')
+        plt.figure(figsize=(10, 6))
+        plt.plot(train_losses, label='Training Loss', color='blue')
+        plt.plot(val_losses, label='Validation Loss', color='red')
         plt.xlabel('Epochs')
         plt.ylabel('Loss')
         plt.title('Learning Curve')
         plt.legend()
         plt.grid(True)
-        plt.savefig(f'{config.log_dir}/{timestamp}/learning_curve.png')
-        plt.close()
+        plt.savefig('learning_curve.png')
+        plt.show()
 
     except Exception as e:
         logger.error(f"Training failed: {str(e)}", exc_info=True)
