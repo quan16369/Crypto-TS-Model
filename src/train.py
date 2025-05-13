@@ -196,21 +196,13 @@ def train(config_path: str = 'configs/train_config.yaml'):
             weight_decay=1e-4
         )
 
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            optimizer,
-            max_lr=config.lr,
-            steps_per_epoch=len(train_loader),
-            epochs=config.epochs,
-            pct_start=0.1
-        )
         
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                                                         optimizer,
                                                         mode='min',       # giảm val_loss
                                                         factor=0.5,       # mỗi lần giảm LR, chia cho 2
                                                         patience=5,       # nếu 5 epoch val_loss không giảm, giảm LR
-                                                        verbose=True,
-                                                        min_lr= config.lr
+                                                        min_lr= 1e-6
                                                     )
 
         # 7. Resume training nếu có
