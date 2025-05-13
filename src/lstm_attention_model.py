@@ -43,24 +43,37 @@ class LSTMAttentionModel(nn.Module):
         self.lstm = nn.LSTM(
             input_size=d_model,
             hidden_size=d_model,
-            num_layers=4,
+            num_layers=2,
             batch_first=True,
             dropout=self.dropout_rate
         )
 
-        self.attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=4, batch_first=True)
-
-        self.output_proj = nn.Sequential(
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=4,
+            dropout=self.dropout_rate,
+            batch_first=True
+        )
+        
+        self.attn_norm = nn.LayerNorm(d_model)
+        
+        # residual connection
+        self.residual = nn.Sequential(
             nn.Linear(d_model, d_model),
+            nn.Dropout(self.dropout_rate)
+        )
+        
+        self.output_proj = nn.Sequential(
+            nn.Linear(d_model, d_model*2),
             nn.GELU(),
             nn.Dropout(self.dropout_rate),
-            nn.Linear(d_model, self.pred_len * self.out_dim)
+            nn.Linear(d_model*2, self.pred_len * self.out_dim)
         )
 
     def attention_weighted_pooling(self, x):
-        # x: [B, T, D]
         attn_weights = F.softmax(x.mean(dim=-1), dim=1)  # [B, T]
-        pooled = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)  # [B, D]
+        attn_weights = F.dropout(attn_weights, p=self.dropout_rate, training=self.training)
+        pooled = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)
         return pooled
     
     def forward(self, x, time_features=None):
@@ -74,8 +87,19 @@ class LSTMAttentionModel(nn.Module):
         lstm_out, _ = self.lstm(x)         # [B, T, d_model]
         
         # add mask attention
-        attn_out, _ = self.attn(lstm_out, lstm_out, lstm_out, attn_mask=mask)  # [B, T, d_model]
+        attn_out, _ = self.self_attn(
+            query=lstm_out,
+            key=lstm_out,
+            value=lstm_out,
+            attn_mask=mask
+        )
         
-        context = self.attention_weighted_pooling(attn_out)   # [B, d_model]
-        out = self.output_proj(context)    # [B, pred_len * out_dim]
+        attn_out = self.attn_norm(lstm_out + attn_out)  # Add & Norm
+        
+        # Residual connection
+        context = self.attention_weighted_pooling(attn_out)
+        context = context + self.residual(context)  # Skip connection
+        
+        out = self.output_proj(context)
+        
         return out.view(-1, self.pred_len, self.out_dim)      # [B, pred_len, out_dim]
