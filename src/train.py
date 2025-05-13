@@ -185,6 +185,15 @@ def train(config_path: str = 'configs/train_config.yaml'):
             epochs=config.epochs,
             pct_start=0.1
         )
+        
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                                                        optimizer,
+                                                        mode='min',       # giảm val_loss
+                                                        factor=0.5,       # mỗi lần giảm LR, chia cho 2
+                                                        patience=5,       # nếu 5 epoch val_loss không giảm, giảm LR
+                                                        verbose=True,
+                                                        min_lr= config.lr
+                                                    )
 
         # 7. Resume training nếu có
         start_epoch = 0
@@ -231,7 +240,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
             # 8.2 Evaluation phase
             avg_train_loss = epoch_loss / len(train_loader)
             val_loss = evaluate(model, val_loader, config.device, loss_fn)
-            scheduler.step()
+            scheduler.step(val_loss)
 
             # 8.3 Cập nhật delta cho Huber Loss
             if isinstance(loss_fn, AdaptiveHuberLoss):
