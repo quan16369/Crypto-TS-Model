@@ -7,6 +7,11 @@ from tqdm import tqdm
 import logging
 import glob
 from lstm_attention_model import LSTMAttentionModel
+from rwkv_ts_model import CryptoRWKV_TS
+from lstm_model import LSTMModel
+from cnn_lstm_model import CNNLSTMModel
+from cnn_lstm_attention_model import LSTMWithCNNAttention
+from lstm_flashattention_model import LSTMFlashAttentionModel
 from data_loader import CryptoDataLoader
 from utils import TrainingTracker, EarlyStopper
 import torch.nn.functional as F
@@ -151,7 +156,20 @@ def train(config_path: str = 'configs/train_config.yaml'):
         val_loader = data_loader.test_loader
 
         # 4. Khởi tạo model
-        model = LSTMAttentionModel(config_dict).to(config.device)
+        model_type = config_dict['model'].get('model_type', 'lstm').lower()
+        if model_type == 'lstm_attention':
+            model = LSTMAttentionModel(config_dict).to(config.device)
+        elif model_type == 'rwkv':
+            model = CryptoRWKV_TS(config_dict).to(config.device)
+        elif model_type == 'cnn_lstm':
+            model = CNNLSTMModel(config_dict).to(config.device)
+        elif model_type == 'cnn_lstm_attention':
+            model = LSTMWithCNNAttention(config_dict).to(config.device)
+        elif model_type == 'lstm_flashattenion':
+            model = LSTMFlashAttentionModel(config_dict).to(config.device)
+        else:
+            model = LSTMModel(config_dict).to(config.device)
+        print(model_type)
         
         # 5. Khởi tạo loss function
         if config.loss_fn.lower() == "huber":
