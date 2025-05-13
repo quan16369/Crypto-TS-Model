@@ -2,95 +2,111 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any
-from embed import CryptoDataEmbedding
 
-class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, n_heads):
+class CNNFeatureExtractor(nn.Module):
+    def __init__(self, input_dim, d_model):
         super().__init__()
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
-        
-        self.q_linear = nn.Linear(d_model, d_model)
-        self.k_linear = nn.Linear(d_model, d_model)
-        self.v_linear = nn.Linear(d_model, d_model)
-        self.out_linear = nn.Linear(d_model, d_model)
+        self.conv_blocks = nn.Sequential(
+            nn.Conv1d(input_dim, d_model//2, kernel_size=3, padding=1),
+            nn.BatchNorm1d(d_model//2),
+            nn.GELU(),
+            nn.MaxPool1d(kernel_size=2, stride=2),
+            
+            nn.Conv1d(d_model//2, d_model, kernel_size=3, padding=1),
+            nn.BatchNorm1d(d_model),
+            nn.GELU(),
+            nn.MaxPool1d(kernel_size=2, stride=2)
+        )
         
     def forward(self, x):
-        B, T, _ = x.shape
-        q = self.q_linear(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        k = self.k_linear(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        v = self.v_linear(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        
-        attn_scores = (q @ k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim))
-        attn_weights = F.softmax(attn_scores, dim=-1)
-        output = (attn_weights @ v).transpose(1, 2).contiguous().view(B, T, -1)
-        
-        return self.out_linear(output)
+        # x: [B, T, D] -> [B, D, T] cho Conv1d
+        x = x.permute(0, 2, 1)
+        x = self.conv_blocks(x)
+        return x.permute(0, 2, 1)  # Trả về [B, T', D']
 
-class LSTMWithCNNAttention(nn.Module):
+class LSTMCNNAttentionModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
-        self.config = config['model']
-        self.device = torch.device(config['training']['device'])
+        model_cfg = config['model']
+        d_model = model_cfg['d_model']
+        enc_in = model_cfg['enc_in']
+        self.pred_len = model_cfg['pred_len']
+        self.out_dim = model_cfg.get('output_dim', 1)
+        self.dropout_rate = model_cfg.get('dropout', 0.3)
+        self.num_heads = model_cfg.get('n_heads', 4)
+
+        # CNN Feature Extractor
+        self.cnn = CNNFeatureExtractor(enc_in, d_model)
         
-        # Embedding
-        self.embedding = CryptoDataEmbedding(
-            c_in=self.config['enc_in'],
-            d_model=self.config['d_model'],
-            patch_size=self.config.get('patch_size', 16),
-            lookback=self.config.get('volatility_lookback', 11),
-            dropout=self.config.get('dropout', 0.1)
-        )
+        # Positional Encoding
+        self.pos_encoder = PositionalEncoding(d_model)
         
-        # CNN Feature Extraction 
-        self.conv1d = nn.Conv1d(in_channels=self.config['d_model'], 
-                                out_channels=self.config['d_model'], 
-                                kernel_size=3, padding=1)  # Convolutional layer to capture temporal patterns
-        self.max_pool = nn.MaxPool1d(kernel_size=2, stride=2)  # Max pooling to downsample the sequence
-        
-        # LSTM
+        # LSTM Layer
         self.lstm = nn.LSTM(
-            input_size=self.config['d_model'],
-            hidden_size=self.config['d_model'],
-            num_layers=self.config['e_layers'],
+            input_size=d_model,
+            hidden_size=d_model,
+            num_layers=2,
             batch_first=True,
-            dropout=self.config.get('dropout', 0.1) if self.config['e_layers'] > 1 else 0
+            dropout=self.dropout_rate
         )
         
-        # Attention
-        self.attention = MultiHeadAttention(
-            d_model=self.config['d_model'],
-            n_heads=self.config['n_heads']
+        # Multihead Attention
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=self.num_heads,
+            dropout=self.dropout_rate,
+            batch_first=True
         )
+        self.attn_norm = nn.LayerNorm(d_model)
         
-        # Predictor
-        self.predictor = nn.Sequential(
-            nn.Linear(self.config['d_model'], self.config.get('d_ff', 512)),
+        # Residual Connections
+        self.residual1 = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.Dropout(self.dropout_rate)
+        )
+        self.residual2 = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.Dropout(self.dropout_rate))
+        
+        # Output Projection
+        self.output_proj = nn.Sequential(
+            nn.Linear(d_model, d_model*2),
             nn.GELU(),
-            nn.Dropout(self.config.get('dropout', 0.1)),
-            nn.Linear(self.config.get('d_ff', 512), self.config['c_out'] * self.config['pred_len']),
-            nn.Unflatten(-1, (self.config['pred_len'], self.config['c_out']))
+            nn.Dropout(self.dropout_rate),
+            nn.Linear(d_model*2, self.pred_len * self.out_dim)
         )
 
-    def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
-        # Embedding
-        x = self.embedding(x_enc, x_mark_enc)
+    def attention_weighted_pooling(self, x):
+        attn_weights = F.softmax(x.mean(dim=-1), dim=1)
+        attn_weights = F.dropout(attn_weights, p=self.dropout_rate, training=self.training)
+        return torch.sum(x * attn_weights.unsqueeze(-1), dim=1)
+    
+    def forward(self, x, time_features=None):
+        B, T, _ = x.shape
         
-        # Add time features if available
-        if x_mark_enc is not None and hasattr(self, 'time_embed'):
-            x = x + self.time_embed(x_mark_enc)  # Add time embeddings to features
+        # 1. CNN Feature Extraction
+        x = self.cnn(x)  # [B, T', d_model]
         
-        # Apply CNN to extract temporal features
-        x = self.conv1d(x.permute(0, 2, 1))  # Change shape for CNN input [B, C, L]
-        x = self.max_pool(x)  # Apply max pooling to downsample
+        # 2. Positional Encoding
+        x = self.pos_encoder(x)
         
-        # LSTM
+        # 3. LSTM Processing
         lstm_out, _ = self.lstm(x)
         
-        # Attention
-        attn_out = self.attention(lstm_out)
+        # 4. Multihead Attention với Causal Mask
+        mask = torch.triu(torch.ones(x.size(1), x.size(1)), diagonal=1).bool().to(x.device)
+        attn_out, _ = self.self_attn(
+            query=lstm_out,
+            key=lstm_out,
+            value=lstm_out,
+            attn_mask=mask
+        )
+        attn_out = self.attn_norm(lstm_out + attn_out)  # Add & Norm
         
-        # Prediction
-        pred = self.predictor(attn_out[:, -self.config['pred_len']:, :])
-        return pred
+        # 5. Context Pooling với Residual
+        context = self.attention_weighted_pooling(attn_out)
+        context = context + self.residual1(context)
+        
+        # 6. Output Projection
+        out = self.output_proj(context)
+        return out.view(-1, self.pred_len, self.out_dim)
