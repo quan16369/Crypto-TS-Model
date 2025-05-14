@@ -2,13 +2,14 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import RobustScaler, StandardScaler, MinMaxScaler
+from sklearn.preprocessing import RobustScaler, MinMaxScaler
 import ta
 from typing import Optional, Dict, Any
 import yaml
 from pathlib import Path
-from sklearn.base import TransformerMixin, BaseEstimator
-from sklearn.model_selection import train_test_split
+from sklearn.base import TransformerMixin
+import torch.nn.functional as F
+import random
 
 class CryptoDataset(Dataset):
     def __init__(self, 
@@ -23,20 +24,25 @@ class CryptoDataset(Dataset):
         self.train = train
         self.test_mode = test_mode
         
+        # Tải và tiền xử lý dữ liệu
         raw_df = self._load_and_clean(data_path)
         self.data = self._enhance_crypto_features(raw_df, self.freq)
         
-        # Khởi tạo scalers với cải tiến mới
+        # Khởi tạo scalers
         self.scalers = scalers if scalers is not None else {
-            'price': RobustScaler(),  # Thay StandardScaler bằng RobustScaler
+            'price': RobustScaler(),
             'volume': RobustScaler(),
-            'indicators': MinMaxScaler(feature_range=(-1, 1))
+            'indicators': MinMaxScaler(feature_range=(-1, 1)),
+            'time': MinMaxScaler()
         }
-        self._fit_scalers()
+        
+        # Fit và transform dữ liệu
+        if self.train:
+            self._fit_scalers()
         self._scale_data()
 
     def _load_and_clean(self, path: str) -> pd.DataFrame:
-
+        """Tải và làm sạch dữ liệu thô"""
         df = pd.read_csv(path, float_precision='high')
         
         # Chuẩn hóa tên cột
@@ -64,12 +70,11 @@ class CryptoDataset(Dataset):
             q3 = df[col].quantile(0.99)
             df[col] = df[col].clip(lower=q1, upper=q3)
             
-        df = df.replace([np.inf, -np.inf], np.nan).ffill().bfill()
-        
-        return df
+        return df.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
     def _enhance_crypto_features(self, df: pd.DataFrame, freq: str) -> pd.DataFrame:
-        """Cải tiến feature engineering"""
+
+        # Resample nếu tần số khác 5 phút
         if freq != '5T':
             ohlc_dict = {
                 'open': 'first',
@@ -80,72 +85,75 @@ class CryptoDataset(Dataset):
             }
             df = df.resample(freq).apply(ohlc_dict).dropna()
         
-        # Tính toán các features 
+        # 1. Features giá và lợi nhuận
         df['log_returns'] = np.log1p(df['close'].pct_change())
-        df['volatility'] = df['log_returns'].rolling(12).std()
+        df['price_ma_ratio'] = df['close'] / df['close'].rolling(24, min_periods=1).mean()
+        df['price_spread'] = (df['high'] - df['low']) / df['close']
         
-        # Technical indicators
+        # 2. Features volume
+        df['volume_zscore'] = (df['volume'] - df['volume'].rolling(24).mean()) / df['volume'].rolling(24).std()
+        df['volume_ma_ratio'] = df['volume'] / df['volume'].rolling(24, min_periods=1).mean()
+        df['liquidity'] = np.log1p(df['volume'] * df['close'])
+        
+        # 3. Technical indicators
         df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
         df['macd'] = ta.trend.MACD(df['close'], window_slow=26, window_fast=12).macd_diff()
         df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
-        
-        # Volume features 
-        df['volume_zscore'] = (df['volume'] - df['volume'].rolling(24).mean()) / df['volume'].rolling(24).std()
         df['obv'] = ta.volume.OnBalanceVolumeIndicator(df['close'], df['volume']).on_balance_volume()
         
-        # Price features
-        df['price_spread'] = (df['high'] - df['low']) / df['close']
-        df['liquidity'] = np.log1p(df['volume'] * df['close'])  # Log transform
+        # 4. Volatility features
+        for window in [6, 12, 24]:  # 30 phút, 1 giờ, 2 giờ
+            df[f'volatility_{window}'] = df['log_returns'].rolling(window).std()
         
-        # Momentum features 
-        df['momentum_5_20'] = df['close'].rolling(5).mean() - df['close'].rolling(20).mean()
+        # 5. Momentum features
+        df['momentum_3_6'] = df['close'].rolling(3).mean() - df['close'].rolling(6).mean()
+        df['momentum_6_12'] = df['close'].rolling(6).mean() - df['close'].rolling(12).mean()
         
-        # Time-based features
+        # 6. Time features
         df['hour'] = df.index.hour
         df['dayofweek'] = df.index.dayofweek
-        df['day'] = df.index.day
-        df['month'] = df.index.month
         df['is_weekend'] = df['dayofweek'].isin([5, 6]).astype(int)
-        df['is_month_start'] = df.index.is_month_start.astype(int)
-        df['is_quarter_end'] = df.index.is_quarter_end.astype(int)
+        df['is_market_open'] = ((df.index.hour >= 8) & (df.index.hour < 20)).astype(int)
         
-        # Encode cyclical time features
+        # 7. Cyclical encoding
         df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
         df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
         df['dow_sin'] = np.sin(2 * np.pi * df['dayofweek'] / 7)
         df['dow_cos'] = np.cos(2 * np.pi * df['dayofweek'] / 7)
-
+        
         return df.dropna()
 
     def _fit_scalers(self):
+
         if not self.train:
             return
         
-        # Nhóm các features để scale với logic mới
-        price_cols = ['open', 'high', 'low', 'close']
-        volume_cols = ['volume', 'volume_zscore', 'liquidity']
-        indicator_cols = ['rsi', 'macd', 'volatility', 'log_returns', 'obv', 'price_spread', 'atr', 'momentum_5_20']
-        time_cols = ['hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_weekend', 'is_month_start', 'is_quarter_end']
+        price_cols = ['open', 'high', 'low', 'close', 'price_ma_ratio', 'price_spread']
+        volume_cols = ['volume', 'volume_zscore', 'volume_ma_ratio', 'liquidity']
+        indicator_cols = ['rsi', 'macd', 'atr', 'obv', 'log_returns'] + \
+                        [f'volatility_{w}' for w in [6, 12, 24]] + \
+                        ['momentum_3_6', 'momentum_6_12']
+        time_cols = ['hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_weekend', 'is_market_open']
         
-        # Fit scalers với data đã được xử lý outlier
         self.scalers['price'].fit(self.data[price_cols])
         self.scalers['volume'].fit(self.data[volume_cols])
         self.scalers['indicators'].fit(self.data[indicator_cols])
-        self.scalers['time'] = MinMaxScaler()
-        self.scalers['time'].fit(self.data[time_cols])  # Fit cho các time-based features
+        self.scalers['time'].fit(self.data[time_cols])
 
     def _scale_data(self):
-        price_cols = ['open', 'high', 'low', 'close']
-        volume_cols = ['volume', 'volume_zscore', 'liquidity']
-        indicator_cols = ['rsi', 'macd', 'volatility', 'log_returns', 'obv', 'price_spread', 'atr', 'momentum_5_20']
-        time_cols = ['hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_weekend', 'is_month_start', 'is_quarter_end']
+
+        price_cols = ['open', 'high', 'low', 'close', 'price_ma_ratio', 'price_spread']
+        volume_cols = ['volume', 'volume_zscore', 'volume_ma_ratio', 'liquidity']
+        indicator_cols = ['rsi', 'macd', 'atr', 'obv', 'log_returns'] + \
+                        [f'volatility_{w}' for w in [6, 12, 24]] + \
+                        ['momentum_3_6', 'momentum_6_12']
+        time_cols = ['hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_weekend', 'is_market_open']
         
-        # Scale từng nhóm features
         scaled_data = pd.DataFrame(index=self.data.index)
         scaled_data[price_cols] = self.scalers['price'].transform(self.data[price_cols])
         scaled_data[volume_cols] = self.scalers['volume'].transform(self.data[volume_cols])
         scaled_data[indicator_cols] = self.scalers['indicators'].transform(self.data[indicator_cols])
-        scaled_data[time_cols] = self.scalers['time'].transform(self.data[time_cols])  # Scale time features
+        scaled_data[time_cols] = self.scalers['time'].transform(self.data[time_cols])
         
         self.scaled_data = scaled_data.values
         self.feature_names = price_cols + volume_cols + indicator_cols + time_cols
@@ -154,23 +162,79 @@ class CryptoDataset(Dataset):
         return len(self.data) - self.seq_len - self.pred_len + 1
 
     def __getitem__(self, idx: int) -> dict:
-
         start_idx = idx
         end_idx = idx + self.seq_len
-        pred_end_idx = end_idx + self.pred_len 
+        pred_end_idx = end_idx + self.pred_len
         
         x = self.scaled_data[start_idx:end_idx]
         y = self.scaled_data[end_idx:pred_end_idx, self.feature_names.index('close')]
         
-        # Thêm noise ngẫu nhiên khi train để tăng tính tổng quát
+        # Data augmentation chỉ khi training
         if self.train and not self.test_mode:
-            noise = np.random.normal(0, 0.01, size=x.shape)
-            x = x + noise
+            x, y = self._augment_sequence(x, y)
         
         return {
             'x': torch.FloatTensor(x),  # [seq_len, num_features]
             'y': torch.FloatTensor(y).unsqueeze(-1)  # [pred_len, 1]
         }
+    
+    def _augment_sequence(self, x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        # 1. Time warping
+        if random.random() > 0.7:
+            warp_factor = random.uniform(0.8, 1.2)
+            new_length = int(x.shape[0] * warp_factor)
+            x = F.interpolate(
+                torch.from_numpy(x).unsqueeze(0).transpose(1,2), 
+                size=new_length, 
+                mode='linear'
+            ).transpose(1,2).squeeze(0).numpy()
+        
+        # 2. Feature noise
+        if random.random() > 0.5:
+            noise_level = random.uniform(0.005, 0.02)
+            x = x + np.random.normal(0, noise_level, size=x.shape)
+        
+        # 3. Random masking
+        if random.random() > 0.5:
+            mask = np.random.random(size=x.shape) > 0.1
+            x = x * mask
+        
+        return x, y
+    
+    @classmethod
+    def from_cassandra_rows(cls, rows: list, config: Dict[str, Any], scalers: Optional[Dict] = None):
+        """Tạo dataset từ dữ liệu real-time"""
+        data = {
+            'timestamp': [row.timestamp for row in rows],
+            'open': [float(row.open) for row in rows],
+            'high': [float(row.high) for row in rows],
+            'low': [float(row.low) for row in rows],
+            'close': [float(row.close) for row in rows],
+            'volume': [float(row.volume) for row in rows]
+        }
+        df = pd.DataFrame(data)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.set_index('timestamp').sort_index()
+        
+        instance = cls.__new__(cls)
+        instance.config = config
+        instance.seq_len = config['model']['seq_len']
+        instance.pred_len = config['model']['pred_len']
+        instance.freq = config['data']['freq']
+        instance.train = False
+        instance.test_mode = True
+        
+        instance.data = instance._enhance_crypto_features(df, instance.freq)
+        instance.scalers = scalers if scalers else {
+            'price': RobustScaler(),
+            'volume': RobustScaler(),
+            'indicators': MinMaxScaler(feature_range=(-1, 1)),
+            'time': MinMaxScaler()
+        }
+        instance._fit_scalers()
+        instance._scale_data()
+        
+        return instance
 
 class CryptoDataLoader:
     def __init__(self, config_path: str = None, data_path: Optional[str] = None):
@@ -188,7 +252,7 @@ class CryptoDataLoader:
             train=True
         )
         
-        # Chia dữ liệu theo thời gian
+        # Chia dữ liệu theo thời gian 
         split_idx = int(len(full_data) * self.config['data']['train_ratio'])
         train_idx = np.arange(split_idx)
         test_idx = np.arange(split_idx, len(full_data))
@@ -200,7 +264,7 @@ class CryptoDataLoader:
         self.scalers = full_data.scalers
         self.feature_names = full_data.feature_names
         
-        # Tạo data loaders với cải tiến
+        # Tạo data loaders
         self.batch_size = self.config['training']['batch_size']
         self.train_loader = self._create_loader(self.train_data, shuffle=True)
         self.test_loader = self._create_loader(self.test_data, shuffle=False)
@@ -210,8 +274,8 @@ class CryptoDataLoader:
             dataset,
             batch_size=self.batch_size,
             shuffle=shuffle,
-            num_workers=2,  
+            num_workers=4, 
             pin_memory=torch.cuda.is_available(),
             persistent_workers=True,
-            drop_last=True  # Bỏ batch cuối nếu không đủ size
+            drop_last=True
         )
