@@ -5,6 +5,7 @@ from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from typing import Dict, Any, Optional, Union, Tuple 
 import numpy as np 
+from torch import nn
 
 def seed_everything(seed: int = 42):
     """Cố định seed cho tất cả thư viện"""
