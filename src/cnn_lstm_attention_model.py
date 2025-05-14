@@ -78,7 +78,7 @@ class LSTMCNNAttentionModel(nn.Module):
         )
         self.attn_norm = nn.LayerNorm(self.d_model)
         
-        # Output Projection (giữ nguyên structure gốc)
+        # Output Projection 
         self.output_proj = nn.Sequential(
             nn.Linear(self.d_model, self.d_model * 2),
             nn.GELU(),
