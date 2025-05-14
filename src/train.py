@@ -258,10 +258,14 @@ def train(config_path: str = 'configs/train_config.yaml'):
                     # Mixed precision forward
                     with torch.cuda.amp.autocast(enabled=config.use_amp):
                         pred = model(x)
-    
-                        # Reshape target nếu cần thiết
-                        if y.shape[1] != pred.shape[1]:
-                            y = y[:, :pred.shape[1], :]  # Cắt target cho khớp với pred_len
+                        
+                        # Ensure target matches prediction length
+                        if y.shape[1] > pred.shape[1]:
+                            y = y[:, :pred.shape[1], :]  # Truncate target if longer
+                        elif y.shape[1] < pred.shape[1]:
+                            # Pad target if shorter (though this shouldn't happen if data is prepared correctly)
+                            pad_size = pred.shape[1] - y.shape[1]
+                            y = F.pad(y, (0, 0, 0, pad_size), "constant", 0)
                         
                         loss = loss_fn(pred, y) / config.grad_accum_steps
                     
