@@ -36,20 +36,21 @@ class LSTMModel(nn.Module):
         batch_size, seq_len, _ = x_enc.shape
         
         # 1. Feature projection
-        # Reshape to combine batch and sequence dimensions for linear layer
         x = x_enc.reshape(-1, x_enc.size(-1))  # [batch*seq_len, num_features]
         x = self.input_net(x)
-        
-        # Reshape back for LSTM
         x = x.reshape(batch_size, seq_len, -1)  # [batch, seq_len, d_model]
         
         # 2. LSTM processing
         lstm_out, _ = self.lstm(x)
         
-        # 3. Get last hidden state  
-        last_hidden = lstm_out[:, -1, :]  # Shape: [batch_size, d_model]
+        # 3. Prediction for each time step in pred_len
+        preds = []
+        for i in range(self.config['pred_len']):
+            # Use the last hidden state for each prediction step
+            pred = self.output_net(lstm_out[:, -1, :])
+            preds.append(pred.unsqueeze(1))
         
-        # 4. Prediction
-        pred = self.output_net(last_hidden)  # Shape: [batch_size, pred_len]
+        # Stack predictions along time dimension
+        pred = torch.cat(preds, dim=1)  # [batch_size, pred_len, 1]
         
-        return pred.unsqueeze(-1)  #  [batch_size, pred_len, 1]
+        return pred
