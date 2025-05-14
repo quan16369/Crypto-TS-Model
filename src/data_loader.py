@@ -169,37 +169,20 @@ class CryptoDataset(Dataset):
         x = self.scaled_data[start_idx:end_idx]
         y = self.scaled_data[end_idx:pred_end_idx, self.feature_names.index('close')]
         
-        # Data augmentation chỉ khi training
         if self.train and not self.test_mode:
-            x, y = self._augment_sequence(x, y)
+           
+            if random.random() > 0.5:
+                noise_level = random.uniform(0.005, 0.02)
+                x = x + np.random.normal(0, noise_level, size=x.shape)
+            
+            if random.random() > 0.5:
+                mask = np.random.random(size=x.shape) > 0.1
+                x = x * mask
         
         return {
-            'x': torch.FloatTensor(x),  # [seq_len, num_features]
-            'y': torch.FloatTensor(y).unsqueeze(-1)  # [pred_len, 1]
+            'x': torch.FloatTensor(x),
+            'y': torch.FloatTensor(y).unsqueeze(-1)
         }
-    
-    def _augment_sequence(self, x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        # 1. Time warping
-        if random.random() > 0.7:
-            warp_factor = random.uniform(0.8, 1.2)
-            new_length = int(x.shape[0] * warp_factor)
-            x = F.interpolate(
-                torch.from_numpy(x).unsqueeze(0).transpose(1,2), 
-                size=new_length, 
-                mode='linear'
-            ).transpose(1,2).squeeze(0).numpy()
-        
-        # 2. Feature noise
-        if random.random() > 0.5:
-            noise_level = random.uniform(0.005, 0.02)
-            x = x + np.random.normal(0, noise_level, size=x.shape)
-        
-        # 3. Random masking
-        if random.random() > 0.5:
-            mask = np.random.random(size=x.shape) > 0.1
-            x = x * mask
-        
-        return x, y
     
     @classmethod
     def from_cassandra_rows(cls, rows: list, config: Dict[str, Any], scalers: Optional[Dict] = None):
