@@ -200,15 +200,16 @@ def train(config_path: str = 'configs/train_config.yaml'):
         
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                                                         optimizer,
-                                                        mode='min',       # giảm val_loss
-                                                        factor=0.5,       # mỗi lần giảm LR, chia cho 2
-                                                        patience=5,       # nếu 5 epoch val_loss không giảm, giảm LR
-                                                        min_lr= 1e-6
+                                                        mode='min',
+                                                        factor=0.5,
+                                                        patience=5,
+                                                        min_lr=1e-6
                                                     )
 
         # 7. Resume training nếu có
         start_epoch = 0
         best_loss = float('inf')
+        checkpoint_path = None
         if config.resume == 'auto':
             checkpoint_path = find_latest_checkpoint(config.checkpoint_dir)
         elif config.resume:
@@ -225,6 +226,9 @@ def train(config_path: str = 'configs/train_config.yaml'):
             logger.info(f"Resumed training from epoch {start_epoch}")
 
         # 8. Vòng lặp training
+        train_losses = []
+        val_losses = []
+        
         for epoch in range(start_epoch, config.epochs):
             model.train()
             epoch_loss = 0
@@ -252,12 +256,15 @@ def train(config_path: str = 'configs/train_config.yaml'):
             avg_train_loss = epoch_loss / len(train_loader)
             val_loss = evaluate(model, val_loader, config.device, loss_fn)
             scheduler.step(val_loss)
+            
+            train_losses.append(avg_train_loss)
+            val_losses.append(val_loss)
 
             # 8.3 Cập nhật delta cho Huber Loss
             if isinstance(loss_fn, AdaptiveHuberLoss):
                 with torch.no_grad():
                     preds = model(torch.cat([b['x'] for b in train_loader], dim=0).to(config.device))
-                    targets = torch.cat([b['y'] for b in train_loader], dim=0).to(config.device)
+                    targets = torch.cat([b['y'] for b in train_loader], dim=0).to(config.device))
                     errors = torch.abs(preds - targets)
                     new_delta = torch.quantile(errors, 0.8).item()
                     loss_fn.update_delta(new_delta)
