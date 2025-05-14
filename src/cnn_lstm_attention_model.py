@@ -15,27 +15,23 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x):
         return x + self.pe[:, :x.size(1)].to(x.device)
-    
+
 class CNNFeatureExtractor(nn.Module):
     def __init__(self, input_dim, d_model):
         super().__init__()
-        self.conv_blocks = nn.Sequential(
-            nn.Conv1d(input_dim, d_model//2, kernel_size=3, padding=1),
-            nn.BatchNorm1d(d_model//2),
-            nn.GELU(),
-            nn.MaxPool1d(kernel_size=2, stride=2),
-            
-            nn.Conv1d(d_model//2, d_model, kernel_size=3, padding=1),
+        self.conv = nn.Sequential(
+            nn.Conv1d(input_dim, d_model, kernel_size=3, padding=1),
             nn.BatchNorm1d(d_model),
             nn.GELU(),
-            nn.MaxPool1d(kernel_size=2, stride=2)
+            nn.Conv1d(d_model, d_model, kernel_size=3, padding=1),
+            nn.BatchNorm1d(d_model),
+            nn.GELU()
         )
-        
+
     def forward(self, x):
-        # x: [B, T, D] -> [B, D, T]  Conv1d
-        x = x.permute(0, 2, 1)
-        x = self.conv_blocks(x)
-        return x.permute(0, 2, 1)  # [B, T', D']
+        x = x.permute(0, 2, 1)  # [B, D, T]
+        x = self.conv(x)
+        return x.permute(0, 2, 1)  # [B, T, D]
 
 class LSTMCNNAttentionModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
@@ -48,13 +44,15 @@ class LSTMCNNAttentionModel(nn.Module):
         self.dropout_rate = model_cfg.get('dropout', 0.3)
         self.num_heads = model_cfg.get('n_heads', 4)
 
-        # CNN Feature Extractor
-        self.cnn = CNNFeatureExtractor(enc_in, d_model)
-        
-        # Positional Encoding
+        self.input_proj = nn.Sequential(
+            nn.Linear(enc_in, d_model),
+            nn.LayerNorm(d_model),
+            nn.GELU()
+        )
+
+        self.cnn = CNNFeatureExtractor(d_model, d_model)
         self.pos_encoder = PositionalEncoding(d_model)
-        
-        # LSTM Layer
+
         self.lstm = nn.LSTM(
             input_size=d_model,
             hidden_size=d_model,
@@ -62,8 +60,7 @@ class LSTMCNNAttentionModel(nn.Module):
             batch_first=True,
             dropout=self.dropout_rate
         )
-        
-        # Multihead Attention
+
         self.self_attn = nn.MultiheadAttention(
             embed_dim=d_model,
             num_heads=self.num_heads,
@@ -71,55 +68,32 @@ class LSTMCNNAttentionModel(nn.Module):
             batch_first=True
         )
         self.attn_norm = nn.LayerNorm(d_model)
-        
-        # Residual Connections
-        self.residual1 = nn.Sequential(
+
+        self.residual = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.Dropout(self.dropout_rate)
         )
-        self.residual2 = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.Dropout(self.dropout_rate))
-        
-        # Output Projection
+
         self.output_proj = nn.Sequential(
-            nn.Linear(d_model, d_model*2),
+            nn.Linear(d_model, d_model * 2),
             nn.GELU(),
             nn.Dropout(self.dropout_rate),
-            nn.Linear(d_model*2, self.pred_len * self.out_dim)
+            nn.Linear(d_model * 2, self.pred_len * self.out_dim)
         )
 
-    def attention_weighted_pooling(self, x):
-        attn_weights = F.softmax(x.mean(dim=-1), dim=1)
-        attn_weights = F.dropout(attn_weights, p=self.dropout_rate, training=self.training)
-        return torch.sum(x * attn_weights.unsqueeze(-1), dim=1)
-    
     def forward(self, x, time_features=None):
         B, T, _ = x.shape
-        
-        # 1. CNN Feature Extraction
-        x = self.cnn(x)  # [B, T', d_model]
-        
-        # 2. Positional Encoding
+
+        x = self.input_proj(x)
+        x = self.cnn(x)
         x = self.pos_encoder(x)
-        
-        # 3. LSTM Processing
+
         lstm_out, _ = self.lstm(x)
-        
-        # 4. Multihead Attention with Causal Mask
-        mask = torch.triu(torch.ones(x.size(1), x.size(1)), diagonal=1).bool().to(x.device)
-        attn_out, _ = self.self_attn(
-            query=lstm_out,
-            key=lstm_out,
-            value=lstm_out,
-            attn_mask=mask
-        )
-        attn_out = self.attn_norm(lstm_out + attn_out)  # Add & Norm
-        
-        # 5. Context Pooling with Residual
-        context = self.attention_weighted_pooling(attn_out)
-        context = context + self.residual1(context)
-        
-        # 6. Output Projection
+
+        mask = torch.triu(torch.ones(T, T), diagonal=1).bool().to(x.device)
+        attn_out, _ = self.self_attn(lstm_out, lstm_out, lstm_out, attn_mask=mask)
+        attn_out = self.attn_norm(lstm_out + attn_out)
+
+        context = attn_out.mean(dim=1) + self.residual(attn_out.mean(dim=1))
         out = self.output_proj(context)
-        return out.view(-1, self.pred_len, self.out_dim)
+        return out.view(B, self.pred_len, self.out_dim)
