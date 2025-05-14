@@ -14,7 +14,7 @@ class LightweightHybridNorm(nn.Module):
     def forward(self, x):
         # Ensure input matches expected dimension
         if x.size(-1) != self.d_model:
-            x = x[:, :, :self.d_model]  # Truncate if necessary
+            x = x[:, :, :self.d_model]  # Simple truncation
         mean = x.mean(dim=-1, keepdim=True)
         std = x.std(dim=-1, keepdim=True)
         return self.gamma * (x - mean) / (std + 1e-6) + self.beta
@@ -23,14 +23,19 @@ class EfficientTemporalBlock(nn.Module):
     def __init__(self, d_model, dilation, dropout=0.1):
         super().__init__()
         self.d_model = d_model
+        # Conv branch with proper padding to maintain sequence length
         self.conv = nn.Sequential(
-            nn.Conv1d(d_model, d_model, 3, padding=dilation, dilation=dilation, groups=4),
+            nn.Conv1d(d_model, d_model, 3, 
+                     padding=dilation, dilation=dilation, 
+                     groups=4),
             nn.GELU(),
             nn.Dropout(dropout),
             LightweightHybridNorm(d_model)
         )
-        # Ensure LSTM output matches d_model when combined
-        self.lstm_cell = nn.LSTMCell(d_model, d_model)
+        # LSTM branch that maintains sequence length
+        self.lstm = nn.LSTM(d_model, d_model, 
+                           batch_first=True,
+                           dropout=dropout if dropout > 0 else 0)
         self.dropout = nn.Dropout(dropout)
     
     def forward(self, x):
@@ -39,16 +44,12 @@ class EfficientTemporalBlock(nn.Module):
         conv_out = self.conv(x.permute(0, 2, 1)).permute(0, 2, 1)
         
         # LSTM branch [B, T, D]
-        h = torch.zeros(B, self.d_model, device=x.device)
-        c = torch.zeros(B, self.d_model, device=x.device)
-        lstm_out = []
-        for t in range(T):
-            h, c = self.lstm_cell(x[:, t, :], (h, c))
-            lstm_out.append(h)
-        lstm_out = self.dropout(torch.stack(lstm_out, dim=1))
+        lstm_out, _ = self.lstm(x)
+        lstm_out = self.dropout(lstm_out)
         
-        # Combine branches
-        return conv_out + lstm_out  # Both [B, T, D]
+        # Ensure both branches have same length
+        min_length = min(conv_out.size(1), lstm_out.size(1))
+        return conv_out[:, :min_length, :] + lstm_out[:, :min_length, :]
 
 class OptimizedAttention(nn.Module):
     def __init__(self, d_model, n_heads=4, dropout=0.1):
@@ -78,8 +79,9 @@ class OptimizedLSTMCNNAttention(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         cfg = config['model']
-        self.d_model = cfg['d_model']
+        self.seq_len = cfg['seq_len']
         self.pred_len = cfg['pred_len']
+        self.d_model = cfg['d_model']
         
         # Input projection
         self.input_proj = nn.Sequential(
@@ -102,14 +104,18 @@ class OptimizedLSTMCNNAttention(nn.Module):
         self.output_net = nn.Sequential(
             nn.Linear(self.d_model, self.d_model//2),
             nn.GELU(),
-            nn.Linear(self.d_model//2, cfg['pred_len'] * cfg['c_out']),
+            nn.Linear(self.d_model//2, self.pred_len * cfg['c_out']),
         )
 
     def forward(self, x):
-        # Input: [B, T, enc_in]
-        x = self.input_proj(x)  # [B, T, d_model]
-        x = self.blocks(x)      # [B, T, d_model]
-        x = self.attn(x)        # [B, T, d_model]
-        x = x.mean(dim=1)       # [B, d_model]
-        x = self.output_net(x)  # [B, pred_len * c_out]
+        # Input: [B, seq_len, enc_in]
+        x = self.input_proj(x)  # [B, seq_len, d_model]
+        x = self.blocks(x)      # [B, seq_len, d_model]
+        x = self.attn(x)        # [B, seq_len, d_model]
+        
+        # Use last 'pred_len' timesteps for prediction
+        x = x[:, -self.pred_len:, :]  # [B, pred_len, d_model]
+        x = x.mean(dim=1)             # [B, d_model]
+        
+        x = self.output_net(x)        # [B, pred_len * c_out]
         return x.view(x.size(0), self.pred_len, -1)  # [B, pred_len, c_out]
