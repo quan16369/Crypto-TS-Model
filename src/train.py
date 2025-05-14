@@ -258,6 +258,11 @@ def train(config_path: str = 'configs/train_config.yaml'):
                     # Mixed precision forward
                     with torch.cuda.amp.autocast(enabled=config.use_amp):
                         pred = model(x)
+    
+                        # Reshape target nếu cần thiết
+                        if y.shape[1] != pred.shape[1]:
+                            y = y[:, :pred.shape[1], :]  # Cắt target cho khớp với pred_len
+                        
                         loss = loss_fn(pred, y) / config.grad_accum_steps
                     
                     # Backward với gradient scaling
