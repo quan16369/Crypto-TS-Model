@@ -7,10 +7,15 @@ class LightweightHybridNorm(nn.Module):
     """Phiên bản norm nhẹ cho tốc độ"""
     def __init__(self, d_model):
         super().__init__()
+        self.d_model = d_model
         self.gamma = nn.Parameter(torch.ones(1, 1, d_model))
         self.beta = nn.Parameter(torch.zeros(1, 1, d_model))
     
     def forward(self, x):
+        # Ensure input dimension matches expected d_model
+        if x.size(-1) != self.d_model:
+            raise ValueError(f"Input feature dimension {x.size(-1)} doesn't match expected {self.d_model}")
+        
         mean = x.mean(dim=-1, keepdim=True)
         std = x.std(dim=-1, keepdim=True)
         return self.gamma * (x - mean) / (std + 1e-6) + self.beta
@@ -19,6 +24,7 @@ class EfficientTemporalBlock(nn.Module):
     """Khối xử lý thời gian hiệu suất cao"""
     def __init__(self, d_model, dilation):
         super().__init__()
+        self.d_model = d_model
         self.conv = nn.Sequential(
             nn.Conv1d(d_model, d_model, 3, padding=dilation, dilation=dilation, groups=4),
             nn.GELU(),
@@ -29,6 +35,9 @@ class EfficientTemporalBlock(nn.Module):
     def forward(self, x):
         # x: [B, T, D]
         B, T, D = x.shape
+        if D != self.d_model:
+            raise ValueError(f"Input feature dimension {D} doesn't match expected {self.d_model}")
+            
         conv_out = self.conv(x.permute(0, 2, 1)).permute(0, 2, 1)
         
         # Lightweight LSTM
@@ -46,10 +55,15 @@ class OptimizedAttention(nn.Module):
     """Attention tốc độ cao"""
     def __init__(self, d_model):
         super().__init__()
+        self.d_model = d_model
         self.qkv = nn.Linear(d_model, d_model*3)
         self.proj = nn.Linear(d_model, d_model)
     
     def forward(self, x):
+        B, T, D = x.shape
+        if D != self.d_model:
+            raise ValueError(f"Input feature dimension {D} doesn't match expected {self.d_model}")
+            
         q, k, v = self.qkv(x).chunk(3, dim=-1)
         attn = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         return self.proj(attn)
@@ -59,6 +73,8 @@ class OptimizedLSTMCNNAttention(nn.Module):
         super().__init__()
         cfg = config['model']
         self.d_model = cfg['d_model']
+        self.pred_len = cfg['pred_len']
+        self.output_dim = cfg.get('output_dim', 1)
         
         # Input projection
         self.input_net = nn.Sequential(
@@ -76,7 +92,7 @@ class OptimizedLSTMCNNAttention(nn.Module):
         self.attn = OptimizedAttention(self.d_model)
         
         # Output
-        self.output_net = nn.Linear(self.d_model, cfg['pred_len'] * cfg.get('output_dim', 1))
+        self.output_net = nn.Linear(self.d_model, self.pred_len * self.output_dim)
 
     def forward(self, x):
         B, T, _ = x.shape
@@ -89,4 +105,4 @@ class OptimizedLSTMCNNAttention(nn.Module):
         x = self.attn(x)
         
         # Output
-        return self.output_net(x.mean(dim=1)).view(B, -1, cfg.get('output_dim', 1))
+        return self.output_net(x.mean(dim=1)).view(B, -1, self.output_dim)
