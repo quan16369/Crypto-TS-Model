@@ -72,7 +72,7 @@ def mixup_data(x, y, alpha=0.4):
     return mixed_x, mixed_y
 
 class CompositeLoss(nn.Module):
-    """Kết hợp nhiều loss function với trọng số"""
+    """combine many loss function with weight"""
     def __init__(self, losses: list, weights: list):
         super().__init__()
         self.losses = losses
@@ -91,9 +91,15 @@ class QuantileLoss(nn.Module):
         self.quantiles = quantiles
         
     def forward(self, pred, target):
+        # Ensure shapes match
+        if target.shape[1] != pred.shape[1]:
+            min_len = min(target.shape[1], pred.shape[1])
+            target = target[:, :min_len, :]
+            pred = pred[:, :min_len, :]
+            
         losses = []
         for i, q in enumerate(self.quantiles):
-            errors = target - pred[:, i]
+            errors = target - pred  # Use same shape predictions
             losses.append(torch.max((q-1) * errors, q * errors).unsqueeze(1))
         return torch.mean(torch.sum(torch.cat(losses, dim=1), dim=1))
 
