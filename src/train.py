@@ -303,7 +303,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
             if isinstance(loss_fn, AdaptiveHuberLoss):
                 with torch.no_grad():
                     preds = model(torch.cat([b['x'] for b in train_loader], dim=0).to(config.device))
-                    targets = torch.cat([b['y'] for b in train_loader], dim=0).to(config.device))
+                    targets = torch.cat([b['y'] for b in train_loader], dim=0).to(config.device)
                     errors = torch.abs(preds - targets)
                     new_delta = torch.quantile(errors, 0.8).item()
                     loss_fn.update_delta(new_delta)
