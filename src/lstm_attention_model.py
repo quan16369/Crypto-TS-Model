@@ -68,7 +68,7 @@ class LSTMAttentionModel(nn.Module):
         
         self.output_proj = nn.Sequential(
             nn.Linear(d_model, d_model*2),
-            nn.LayerNorm(d_model),
+            nn.LayerNorm(d_model*2),
             nn.GELU(),
             nn.Dropout(self.dropout_rate),
             nn.Linear(d_model*2, self.pred_len * self.out_dim)
