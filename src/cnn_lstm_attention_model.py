@@ -17,25 +17,30 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, :x.size(1)]
 
 class EnhancedCNNFeatureExtractor(nn.Module):
-    def __init__(self, input_dim, d_model):
+    def __init__(self, input_dim, d_model, dropout=0.2):
         super().__init__()
-        self.conv_blocks = nn.Sequential(
-            nn.Conv1d(input_dim, d_model, kernel_size=3, padding=1),
-            nn.InstanceNorm1d(d_model),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            nn.Conv1d(d_model, d_model, kernel_size=3, dilation=2, padding=2),
-            nn.InstanceNorm1d(d_model),
-            nn.GELU()
-        )
-        self.res_proj = nn.Linear(input_dim, d_model) if input_dim != d_model else nn.Identity()
+        self.conv1 = nn.Conv1d(input_dim, d_model, kernel_size=3, padding=1)
+        self.norm1 = nn.BatchNorm1d(d_model)
+        self.conv2 = nn.Conv1d(d_model, d_model, kernel_size=3, dilation=2, padding=2)
+        self.norm2 = nn.BatchNorm1d(d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.activation = nn.GELU()
+        self.res_proj = nn.Conv1d(input_dim, d_model, kernel_size=1) if input_dim != d_model else nn.Identity()
 
     def forward(self, x):
-        # Input: [B, T, D]
-        res = self.res_proj(x)
         x = x.permute(0, 2, 1)  # [B, D, T]
-        x = self.conv_blocks(x)
-        return x.permute(0, 2, 1) + res  # [B, T, D]
+        residual = self.res_proj(x)
+        x = self.conv1(x)
+        x = self.norm1(x)
+        x = self.activation(x)
+        x = self.dropout(x)
+
+        x = self.conv2(x)
+        x = self.norm2(x)
+        x = self.activation(x)
+        x = self.dropout(x)
+
+        return (x + residual).permute(0, 2, 1)  # [B, T, D]
 
 class LSTMCNNAttentionModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
@@ -54,12 +59,13 @@ class LSTMCNNAttentionModel(nn.Module):
             nn.GELU(),
             nn.Dropout(self.dropout_rate)
         )
+
         # CNN Feature Extractor
-        self.cnn = EnhancedCNNFeatureExtractor(self.d_model, self.d_model)
-        
+        self.cnn = EnhancedCNNFeatureExtractor(self.d_model, self.d_model, dropout=self.dropout_rate)
+
         # Positional Encoding
         self.pos_encoder = PositionalEncoding(self.d_model)
-        
+
         # LSTM Layer
         self.lstm = nn.LSTM(
             input_size=self.d_model,
@@ -68,8 +74,8 @@ class LSTMCNNAttentionModel(nn.Module):
             batch_first=True,
             dropout=self.dropout_rate if 2 > 1 else 0
         )
-        
-        # Attention Mechanism
+
+        # Multihead Attention
         self.self_attn = nn.MultiheadAttention(
             embed_dim=self.d_model,
             num_heads=model_cfg.get('n_heads', 4),
@@ -77,10 +83,11 @@ class LSTMCNNAttentionModel(nn.Module):
             batch_first=True
         )
         self.attn_norm = nn.LayerNorm(self.d_model)
-        
-        # Output Projection 
-        self.output_proj = nn.Sequential(
+
+        # Feed-forward projection
+        self.ffn = nn.Sequential(
             nn.Linear(self.d_model, self.d_model * 2),
+            nn.LayerNorm(d_model*2),
             nn.GELU(),
             nn.Dropout(self.dropout_rate),
             nn.Linear(self.d_model * 2, self.pred_len * self.out_dim)
@@ -88,25 +95,20 @@ class LSTMCNNAttentionModel(nn.Module):
 
     def forward(self, x, time_features=None):
         B, T, _ = x.shape
-        
-        # Input processing
-        x = self.input_proj(x)
-        x = self.cnn(x)
+
+        # Input projection + CNN + Position
+        x = self.input_proj(x)       # [B, T, D]
+        x = self.cnn(x)              # [B, T, D]
         x = self.pos_encoder(x)
-        
-        # LSTM processing
+
+        # LSTM
         lstm_out, _ = self.lstm(x)
-        
-        # Causal attention
-        mask = torch.triu(torch.ones(T, T), diagonal=1).bool().to(x.device)
-        attn_out, _ = self.self_attn(
-            query=lstm_out,
-            key=lstm_out,
-            value=lstm_out,
-            attn_mask=mask
-        )
-        attn_out = self.attn_norm(lstm_out + attn_out)
-        
-        # Output [B, pred_len, out_dim]
-        out = self.output_proj(attn_out.mean(dim=1))
-        return out.view(B, self.pred_len, self.out_dim)
+
+        # Causal Attention
+        attn_mask = torch.triu(torch.ones(T, T), diagonal=1).bool().to(x.device)
+        attn_out, _ = self.self_attn(lstm_out, lstm_out, lstm_out, attn_mask=attn_mask)
+        attn_out = self.attn_norm(attn_out + lstm_out)  # Residual + LayerNorm
+
+        # Output projection
+        output = self.ffn(attn_out.mean(dim=1))
+        return output.view(B, self.pred_len, self.out_dim)
