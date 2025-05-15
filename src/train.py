@@ -23,7 +23,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torch import nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import OneCycleLR
+from torch.optim.lr_scheduler import OneCycleLR, LambdaLR
+from torch.optim.swa_utils import AveragedModel, SWALR
+import math
 
 # Cấu hình logging và suppress warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -76,6 +78,57 @@ class TrainConfig:
         self.use_amp = config_dict['training'].get('use_amp', True)
         self.grad_accum_steps = config_dict['training'].get('grad_accum_steps', 4)
         self.ema_decay = config_dict['training'].get('ema_decay', 0.999)
+        self.use_swa = config_dict['training'].get('use_swa', False)
+        self.swa_lr = config_dict['training'].get('swa_lr', 0.05)
+        self.swa_start_ratio = config_dict['training'].get('swa_start_ratio', 0.75)
+        self.warmup_epochs = config_dict['training'].get('warmup_epochs', 5)
+
+def get_cosine_schedule_with_warmup(
+    optimizer, 
+    num_warmup_steps, 
+    num_training_steps, 
+    num_cycles=0.5,
+    last_epoch=-1
+):
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(
+            max(1, num_training_steps - num_warmup_steps))
+        return max(
+            0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress))
+        )
+    
+    return LambdaLR(optimizer, lr_lambda, last_epoch)
+
+class SWAWrapper:
+    def __init__(self, model, optimizer, config: TrainConfig):
+        self.swa_model = AveragedModel(model)
+        self.swa_scheduler = SWALR(
+            optimizer, 
+            swa_lr=config.swa_lr,
+            anneal_epochs=5
+        )
+        self.swa_start = int(config.epochs * config.swa_start_ratio)
+        self.swa_activated = False
+
+    def update(self, model, epoch):
+        if epoch >= self.swa_start and not self.swa_activated:
+            logger.info(f"Starting SWA at epoch {epoch+1}")
+            self.swa_activated = True
+        
+        if self.swa_activated:
+            self.swa_model.update_parameters(model)
+            self.swa_scheduler.step()
+            return True
+        return False
+    
+    def finalize(self, data_loader):
+        if self.swa_activated:
+            logger.info("Finalizing SWA with BN update...")
+            torch.optim.swa_utils.update_bn(data_loader, self.swa_model)
+            return self.swa_model.module
+        return None
 
 def evaluate(model, data_loader, device, loss_fn):
     model.eval()
@@ -145,7 +198,7 @@ def save_checkpoint(state, filename):
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     torch.save(state, filename)
     logger.info(f"Checkpoint saved to {filename}")
-
+    
 def train(config_path: str = 'configs/train_config.yaml'):
     try:
         # 1. Load config
@@ -179,7 +232,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
             model = LSTMAttentionHybrid(config_dict).to(config.device)
         else:
             model = LSTMModel(config_dict).to(config.device)
-        logger.info(f"Using model: {model_type}")
+        logger.info(f"🔧 Using model: {model_type}")
 
         # 5. Khởi tạo loss function
         if config.loss_fn.lower() == "huber":
@@ -205,21 +258,30 @@ def train(config_path: str = 'configs/train_config.yaml'):
             model.parameters(),
             lr=config.lr,
             betas=(0.9, 0.999),
-            weight_decay=1e-4
+            weight_decay=1e-3
         )
         
-        scheduler = OneCycleLR(
-            optimizer,
-            max_lr=config.lr*10,
-            steps_per_epoch=len(train_loader),
-            epochs=config.epochs,
-            pct_start=0.3,
-            div_factor=25,
-            final_div_factor=100
-        )
-
-        # 7. Khởi tạo EMA
-        ema = ModelEMA(model, decay=config.ema_decay)
+        # 7. Thiết lập scheduler
+        total_steps = len(train_loader) * config.epochs
+        warmup_steps = len(train_loader) * config.warmup_epochs
+        
+        if config.use_swa:
+            scheduler = get_cosine_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=warmup_steps,
+                num_training_steps=total_steps,
+                num_cycles=0.5
+            )
+            swa = SWAWrapper(model, optimizer, config)
+        else:
+            scheduler = OneCycleLR(
+                optimizer,
+                max_lr=config.lr*10,
+                steps_per_epoch=len(train_loader),
+                epochs=config.epochs,
+                pct_start=0.3
+            )
+            swa = None
 
         # 8. Resume training nếu có
         start_epoch = 0
@@ -250,7 +312,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
             epoch_loss = 0
             optimizer.zero_grad()
             
-            # 9.1 Training phase với gradient accumulation
+            # Training phase với gradient accumulation
             with tqdm(train_loader, unit="batch", desc=f"Epoch {epoch+1}/{config.epochs}") as tepoch:
                 for i, batch in enumerate(tepoch):
                     x = batch['x'].to(config.device)
@@ -259,15 +321,6 @@ def train(config_path: str = 'configs/train_config.yaml'):
                     # Mixed precision forward
                     with torch.cuda.amp.autocast(enabled=config.use_amp):
                         pred = model(x)
-                        
-                        # Ensure target matches prediction length
-                        if y.shape[1] > pred.shape[1]:
-                            y = y[:, :pred.shape[1], :]  # Truncate target if longer
-                        elif y.shape[1] < pred.shape[1]:
-                            # Pad target if shorter (though this shouldn't happen if data is prepared correctly)
-                            pad_size = pred.shape[1] - y.shape[1]
-                            y = F.pad(y, (0, 0, 0, pad_size), "constant", 0)
-                        
                         loss = loss_fn(pred, y) / config.grad_accum_steps
                     
                     # Backward với gradient scaling
@@ -286,30 +339,22 @@ def train(config_path: str = 'configs/train_config.yaml'):
                         scaler.update()
                         optimizer.zero_grad()
                         scheduler.step()
-                        
-                        # Cập nhật EMA
-                        ema.update(model)
                     
                     epoch_loss += loss.item() * config.grad_accum_steps
                     tepoch.set_postfix(loss=loss.item() * config.grad_accum_steps)
 
-            # 9.2 Evaluation phase
+            # Validation phase
             avg_train_loss = epoch_loss / len(train_loader)
-            
-            # Validate với cả model và EMA model
             val_loss = evaluate(model, val_loader, config.device, loss_fn)
-            ema_val_loss = evaluate(ema.module, val_loader, config.device, loss_fn)
-            
-            # Chọn model tốt hơn
-            if ema_val_loss < val_loss:
-                model.load_state_dict(ema.module.state_dict())
-                val_loss = ema_val_loss
-                logger.info("Using EMA model for better validation loss")
             
             train_losses.append(avg_train_loss)
             val_losses.append(val_loss)
 
-            # 9.3 Cập nhật delta cho Huber Loss
+            # Cập nhật SWA nếu được kích hoạt
+            if config.use_swa:
+                swa.update(model, epoch)
+
+            # Cập nhật delta cho Huber Loss
             if isinstance(loss_fn, AdaptiveHuberLoss):
                 with torch.no_grad():
                     preds = model(torch.cat([b['x'] for b in train_loader], dim=0).to(config.device))
@@ -319,7 +364,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
                     loss_fn.update_delta(new_delta)
                     tracker.log("Loss/delta", new_delta, epoch)
 
-            # 9.4 Logging
+            # Logging
             tracker.log("Loss/train", avg_train_loss, epoch)
             tracker.log("Loss/val", val_loss, epoch)
             tracker.log("Metrics/lr", optimizer.param_groups[0]['lr'], epoch)
@@ -328,7 +373,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
                       f"Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f} | "
                       f"LR: {optimizer.param_groups[0]['lr']:.2e}")
 
-            # 9.5 Lưu checkpoint
+            # Lưu checkpoint
             if epoch % config.checkpoint_interval == 0 or val_loss < best_loss:
                 if val_loss < best_loss:
                     best_loss = val_loss
@@ -348,12 +393,22 @@ def train(config_path: str = 'configs/train_config.yaml'):
                     'config': config_dict
                 }, checkpoint_path)
 
-            # 9.6 Early stopping
+            # Early stopping
             if stopper.check(val_loss):
                 logger.info(f"Early stopping triggered at epoch {epoch+1}")
                 break
 
-        # 10. Visualize kết quả
+        # Finalize SWA
+        if config.use_swa:
+            final_model = swa.finalize(train_loader)
+            if final_model is not None:
+                final_val_loss = evaluate(final_model, val_loader, config.device, loss_fn)
+                logger.info(f"Final SWA Val Loss: {final_val_loss:.4f}")
+                torch.save(final_model.state_dict(), f"final_swa_model_{timestamp}.pt")
+        else:
+            torch.save(model.state_dict(), f"final_model_{timestamp}.pt")
+
+        # Visualize kết quả
         plt.figure(figsize=(10, 6))
         plt.plot(train_losses, label='Training Loss', color='blue')
         plt.plot(val_losses, label='Validation Loss', color='red')
@@ -370,7 +425,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
         raise
     finally:
         tracker.close()
-        logger.info("Training completed")
+        logger.info("🏁 Training completed")
 
 if __name__ == "__main__":
     train()
