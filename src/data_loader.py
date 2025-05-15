@@ -23,6 +23,8 @@ class CryptoDataset(Dataset):
         self.freq = config['data']['freq']
         self.train = train
         self.test_mode = test_mode
+        self.current_epoch = 0
+        self.max_epoch = 100 
         
         # Tải và tiền xử lý dữ liệu
         raw_df = self._load_and_clean(data_path)
@@ -157,7 +159,11 @@ class CryptoDataset(Dataset):
         
         self.scaled_data = scaled_data.values
         self.feature_names = price_cols + volume_cols + indicator_cols + time_cols
-
+        
+    def set_epoch(self, epoch, max_epoch):
+        self.current_epoch = epoch
+        self.max_epoch = max_epoch
+        
     def __len__(self):
         return len(self.data) - self.seq_len - self.pred_len + 1
 
@@ -165,25 +171,82 @@ class CryptoDataset(Dataset):
         start_idx = idx
         end_idx = idx + self.seq_len
         pred_end_idx = end_idx + self.pred_len
-        
-        x = self.scaled_data[start_idx:end_idx]
+
+        x = self.scaled_data[start_idx:end_idx].copy()
         y = self.scaled_data[end_idx:pred_end_idx, self.feature_names.index('close')]
-        
+
         if self.train and not self.test_mode:
-           
-            if random.random() > 0.5:
-                noise_level = random.uniform(0.005, 0.02)
-                x = x + np.random.normal(0, noise_level, size=x.shape)
+            # 1. Khởi tạo tham số augmentation
+            current_epoch = getattr(self, 'current_epoch', 0)  # Mặc định 0 nếu không có
+            max_epoch = getattr(self, 'max_epoch', 100)       # Mặc định 100 epoch
             
+            # Tính toán cường độ augmentation (tăng dần trong nửa đầu training)
+            progress = min(1.0, current_epoch / (max_epoch * 0.5))  # Đạt max ở 50% epochs
+            noise_level = 0.02 * progress
+            mask_ratio = 0.15 * progress
+
+            # 2. Local Mean Masking
             if random.random() > 0.5:
-                mask = np.random.random(size=x.shape) > 0.1
-                x = x * mask
-        
+                mask_length = max(1, int(self.seq_len * mask_ratio))
+                mask_start = random.randint(0, max(0, self.seq_len - mask_length - 1))
+                
+                # Tính mean cục bộ với padding an toàn
+                window_start = max(0, mask_start - 5)
+                window_end = min(self.seq_len, mask_start + mask_length + 5)
+                local_mean = np.mean(x[window_start:window_end], axis=0, keepdims=True)
+                
+                # Áp dụng mask
+                x[mask_start:mask_start+mask_length] = local_mean
+
+            # 3. Adaptive Noise (theo std của từng feature)
+            feature_stds = np.std(x, axis=0, keepdims=True)
+            noise = np.random.normal(0, noise_level * feature_stds, size=x.shape)
+            x = np.clip(x + noise, -3, 3)  # Giới hạn giá trị sau noise
+
+            # 4. Smart Scaling 
+            if random.random() > 0.5:
+                # Chỉ scale các feature không phải close
+                non_close_features = [i for i, name in enumerate(self.feature_names) if name != 'close']
+                if non_close_features:
+                    scale_factors = np.random.uniform(0.9, 1.1, size=(1, len(non_close_features)))
+                    x[:, non_close_features] *= scale_factors
+
         return {
             'x': torch.FloatTensor(x),
             'y': torch.FloatTensor(y).unsqueeze(-1)
         }
-    
+        
+    def _augment_sequence(self, x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        # Time warping với padding
+        if random.random() > 0.7:
+            warp_factor = random.uniform(0.9, 1.1)  # Giới hạn warp factor hẹp hơn
+            new_length = int(x.shape[0] * warp_factor)
+            
+            # Interpolate
+            x_warped = F.interpolate(
+                torch.from_numpy(x).unsqueeze(0).transpose(1,2), 
+                size=new_length, 
+                mode='linear'
+            ).transpose(1,2).squeeze(0).numpy()
+            
+            # Padding hoặc cropping về kích thước ban đầu
+            if new_length > self.seq_len:
+                x = x_warped[:self.seq_len, :]  # Crop
+            else:
+                pad_len = self.seq_len - new_length
+                x = np.pad(x_warped, ((0, pad_len), (0, 0)), mode='edge')  # Padding với edge values
+        
+        # Các augmentations khác giữ nguyên
+        if random.random() > 0.5:
+            noise_level = random.uniform(0.005, 0.02)
+            x = x + np.random.normal(0, noise_level, size=x.shape)
+        
+        if random.random() > 0.5:
+            mask = np.random.random(size=x.shape) > 0.1
+            x = x * mask
+        
+        return x, y
+   
     @classmethod
     def from_cassandra_rows(cls, rows: list, config: Dict[str, Any], scalers: Optional[Dict] = None):
         """Tạo dataset từ dữ liệu real-time"""
