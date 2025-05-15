@@ -245,6 +245,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
         val_losses = []
         
         for epoch in range(start_epoch, config.epochs):
+            train_loader.dataset.set_epoch(epoch, config.epochs)
             model.train()
             epoch_loss = 0
             optimizer.zero_grad()
