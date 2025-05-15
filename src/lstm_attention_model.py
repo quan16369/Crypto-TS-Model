@@ -10,12 +10,12 @@ class PositionalEncoding(nn.Module):
         position = torch.arange(0, max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2) * -(torch.log(torch.tensor(10000.0)) / d_model))
         pe = torch.zeros(max_len, d_model)
-        pe[:, 0::2] = torch.sin(position.float() * div_term)
-        pe[:, 1::2] = torch.cos(position.float() * div_term)
-        self.pe = pe.unsqueeze(0)  # [1, max_len, d_model]
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe.unsqueeze(0))  # [1, max_len, d_model]
 
     def forward(self, x):
-        return x + self.pe[:, :x.size(1)].to(x.device)
+        return x + self.pe[:, :x.size(1)]
 
 
 class LSTMAttentionModel(nn.Module):
@@ -56,6 +56,9 @@ class LSTMAttentionModel(nn.Module):
         )
         
         self.attn_norm = nn.LayerNorm(d_model)
+        self.lstm_norm = nn.LayerNorm(d_model)
+        self.residual_norm = nn.LayerNorm(d_model)
+        self.pool_norm = nn.LayerNorm(d_model)
         
         # residual connection
         self.residual = nn.Sequential(
@@ -65,6 +68,7 @@ class LSTMAttentionModel(nn.Module):
         
         self.output_proj = nn.Sequential(
             nn.Linear(d_model, d_model*2),
+            nn.LayerNorm(d_model),
             nn.GELU(),
             nn.Dropout(self.dropout_rate),
             nn.Linear(d_model*2, self.pred_len * self.out_dim)
@@ -79,27 +83,27 @@ class LSTMAttentionModel(nn.Module):
     def forward(self, x, time_features=None):
         B, T, _ = x.shape
         
-        # Causal mask
-        mask = torch.triu(torch.ones(T, T), diagonal=1).bool().to(x.device)  # [T, T]
+        # Input projection
+        x = self.input_proj(x)
+        x = self.pos_encoder(x)
         
-        x = self.input_proj(x)             # [B, T, d_model]
-        x = self.pos_encoder(x)            # [B, T, d_model]
-        lstm_out, _ = self.lstm(x)         # [B, T, d_model]
+        # LSTM + Norm
+        lstm_out, _ = self.lstm(x)
+        lstm_out = self.lstm_norm(lstm_out)  # add norm
         
-        # add mask attention
-        attn_out, _ = self.self_attn(
-            query=lstm_out,
-            key=lstm_out,
-            value=lstm_out,
-            attn_mask=mask
-        )
+        # Attention
+        mask = torch.triu(torch.ones(T, T), diagonal=1).bool().to(x.device)
+        attn_out, _ = self.self_attn(lstm_out, lstm_out, lstm_out, attn_mask=mask)
+        attn_out = self.attn_norm(lstm_out + attn_out)
         
-        attn_out = self.attn_norm(lstm_out + attn_out)  # Add & Norm
-        
-        # Residual connection
+        # Pooling + Norm
+        # attn_out = self.pool_norm(attn_out)  # add norm before pooling
         context = self.attention_weighted_pooling(attn_out)
-        context = context + self.residual(context)  # Skip connection
         
+        # Residual + Norm
+        context = context + self.residual(context)
+        context = self.residual_norm(context)  # add norm
+        
+        # Output
         out = self.output_proj(context)
-        
-        return out.view(-1, self.pred_len, self.out_dim)      # [B, pred_len, out_dim]
+        return out.view(-1, self.pred_len, self.out_dim)
