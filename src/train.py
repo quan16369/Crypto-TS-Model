@@ -157,7 +157,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         tracker = TrainingTracker(config_dict)
         stopper = EarlyStopper(config_dict)
-        scaler = torch.amp.GradScaler(device_type='cuda', enabled=config.use_amp)
+        scaler = torch.cuda.amp.GradScaler(enabled=config.use_amp)
 
         # 3. Chuẩn bị dữ liệu
         logger.info("Loading data...")
