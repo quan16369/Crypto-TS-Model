@@ -160,10 +160,6 @@ class CryptoDataset(Dataset):
         self.scaled_data = scaled_data.values
         self.feature_names = price_cols + volume_cols + indicator_cols + time_cols
         
-    def set_epoch(self, epoch, max_epoch):
-        self.current_epoch = epoch
-        self.max_epoch = max_epoch
-        
     def __len__(self):
         return len(self.data) - self.seq_len - self.pred_len + 1
 
@@ -215,38 +211,11 @@ class CryptoDataset(Dataset):
             'x': torch.FloatTensor(x),
             'y': torch.FloatTensor(y).unsqueeze(-1)
         }
+                
+    def set_epoch(self, epoch, max_epoch):
+        self.current_epoch = epoch
+        self.max_epoch = max_epoch
         
-    def _augment_sequence(self, x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        # Time warping với padding
-        if random.random() > 0.7:
-            warp_factor = random.uniform(0.9, 1.1)  # Giới hạn warp factor hẹp hơn
-            new_length = int(x.shape[0] * warp_factor)
-            
-            # Interpolate
-            x_warped = F.interpolate(
-                torch.from_numpy(x).unsqueeze(0).transpose(1,2), 
-                size=new_length, 
-                mode='linear'
-            ).transpose(1,2).squeeze(0).numpy()
-            
-            # Padding hoặc cropping về kích thước ban đầu
-            if new_length > self.seq_len:
-                x = x_warped[:self.seq_len, :]  # Crop
-            else:
-                pad_len = self.seq_len - new_length
-                x = np.pad(x_warped, ((0, pad_len), (0, 0)), mode='edge')  # Padding với edge values
-        
-        # Các augmentations khác giữ nguyên
-        if random.random() > 0.5:
-            noise_level = random.uniform(0.005, 0.02)
-            x = x + np.random.normal(0, noise_level, size=x.shape)
-        
-        if random.random() > 0.5:
-            mask = np.random.random(size=x.shape) > 0.1
-            x = x * mask
-        
-        return x, y
-   
     @classmethod
     def from_cassandra_rows(cls, rows: list, config: Dict[str, Any], scalers: Optional[Dict] = None):
         """Tạo dataset từ dữ liệu real-time"""
@@ -303,8 +272,8 @@ class CryptoDataLoader:
         train_idx = np.arange(split_idx)
         test_idx = np.arange(split_idx, len(full_data))
         
-        self.train_data = torch.utils.data.Subset(full_data, train_idx)
-        self.test_data = torch.utils.data.Subset(full_data, test_idx)
+        self.train_data = SubsetWithAttributes(full_data, train_idx)
+        self.test_data = SubsetWithAttributes(full_data, test_idx)
         
         # Lưu scalers và feature names
         self.scalers = full_data.scalers
@@ -325,3 +294,14 @@ class CryptoDataLoader:
             persistent_workers=True,
             drop_last=True
         )
+        
+class SubsetWithAttributes(torch.utils.data.Subset):
+    def __init__(self, dataset, indices):
+        super().__init__(dataset, indices)
+        
+        for attr in dir(dataset):
+            if not attr.startswith('_') and attr != 'indices':
+                setattr(self, attr, getattr(dataset, attr))
+    
+    def set_epoch(self, epoch, max_epoch):
+        self.dataset.set_epoch(epoch, max_epoch)
