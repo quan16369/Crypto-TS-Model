@@ -27,7 +27,7 @@ class LSTMModel(nn.Module):
         # 3. Output Network 
         self.output_net = nn.Sequential(
             nn.Linear(self.config['d_model'], self.config['d_model']),
-            nn.LayerNorm(d_model),
+            nn.LayerNorm(self.config['d_model']),
             nn.SiLU(),
             nn.Linear(self.config['d_model'], self.config['pred_len']),
         )
