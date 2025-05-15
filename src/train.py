@@ -425,7 +425,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
         raise
     finally:
         tracker.close()
-        logger.info("🏁 Training completed")
+        logger.info("Training completed")
 
 if __name__ == "__main__":
     train()
