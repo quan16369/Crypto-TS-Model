@@ -37,8 +37,8 @@ class MultiScaleTemporalAttention(nn.Module):
         # Lớp downsample cho các scale lớn hơn 1
         self.downsamplers = nn.ModuleList([
             nn.Sequential(
-                nn.AvgPool1d(scale, stride=scale),
-                nn.Linear(d_model // scale, d_model)
+                nn.AvgPool1d(kernel_size=scale, stride=scale),
+                nn.Conv1d(d_model, d_model, kernel_size=1)
             ) if scale > 1 else nn.Identity()
             for scale in scales
         ])
@@ -62,7 +62,7 @@ class MultiScaleTemporalAttention(nn.Module):
             # Xử lý theo từng scale
             if scale > 1:
                 # Downsample sequence
-                x_down = downsample(x.permute(0, 2, 1)).permute(0, 2, 1)  # [B, T//scale, d_model]
+                x_down = downsample(x.transpose(1, 2)).transpose(1, 2)
             else:
                 x_down = x
                 
@@ -118,7 +118,6 @@ class OptimizedLSTMAttentionModel(nn.Module):
 
         self.skip_conv = nn.Sequential(
             nn.Conv1d(d_model, d_model, kernel_size=3, padding=1),
-            nn.LayerNorm([d_model, config['model']['seq_len']]),
             nn.GELU()
         )
         
@@ -163,6 +162,8 @@ class OptimizedLSTMAttentionModel(nn.Module):
         
         # Skip connection từ đầu vào LSTM
         skip = self.skip_conv(lstm_out.permute(0, 2, 1)).permute(0, 2, 1)
+        skip = self.pool_norm(skip)  
+
         attn_out = attn_out + skip
         
         # Attention pooling 
