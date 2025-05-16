@@ -79,7 +79,7 @@ class MultiScaleTemporalAttention(nn.Module):
         combined = torch.cat(outputs, dim=-1)
         return self.aggregate(combined)
     
-class LSTMAttentionModel(nn.Module):
+class OptimizedLSTMAttentionModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         model_cfg = config['model']
