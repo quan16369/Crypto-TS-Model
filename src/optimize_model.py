@@ -1,121 +1,177 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 from typing import Dict, Any
 
-class LightweightHybridNorm(nn.Module):
-    def __init__(self, d_model):
-        super().__init__()
-        self.d_model = d_model
-        self.gamma = nn.Parameter(torch.ones(1, 1, d_model))
-        self.beta = nn.Parameter(torch.zeros(1, 1, d_model))
-    
-    def forward(self, x):
-        # Ensure input matches expected dimension
-        if x.size(-1) != self.d_model:
-            x = x[:, :, :self.d_model]  # Simple truncation
-        mean = x.mean(dim=-1, keepdim=True)
-        std = x.std(dim=-1, keepdim=True)
-        return self.gamma * (x - mean) / (std + 1e-6) + self.beta
 
-class EfficientTemporalBlock(nn.Module):
-    def __init__(self, d_model, dilation, dropout=0.1):
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=500):
         super().__init__()
-        self.d_model = d_model
-        # Conv branch with proper padding to maintain sequence length
-        self.conv = nn.Sequential(
-            nn.Conv1d(d_model, d_model, 3, 
-                     padding=dilation, dilation=dilation, 
-                     groups=4),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            LightweightHybridNorm(d_model)
-        )
-        # LSTM branch that maintains sequence length
-        self.lstm = nn.LSTM(d_model, d_model, 
-                           batch_first=True,
-                           dropout=dropout if dropout > 0 else 0)
-        self.dropout = nn.Dropout(dropout)
-    
-    def forward(self, x):
-        B, T, D = x.shape
-        # Conv branch [B, T, D]
-        conv_out = self.conv(x.permute(0, 2, 1)).permute(0, 2, 1)
-        
-        # LSTM branch [B, T, D]
-        lstm_out, _ = self.lstm(x)
-        lstm_out = self.dropout(lstm_out)
-        
-        # Ensure both branches have same length
-        min_length = min(conv_out.size(1), lstm_out.size(1))
-        return conv_out[:, :min_length, :] + lstm_out[:, :min_length, :]
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * -(torch.log(torch.tensor(10000.0)) / d_model))
+        pe = torch.zeros(max_len, d_model)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe.unsqueeze(0))  # [1, max_len, d_model]
 
-class OptimizedAttention(nn.Module):
-    def __init__(self, d_model, n_heads=4, dropout=0.1):
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1)]
+
+class MultiScaleTemporalAttention(nn.Module):
+    def __init__(self, d_model, n_heads=4, dropout=0.1, scales=[1, 3, 6]):
         super().__init__()
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        self.scales = scales
         self.d_model = d_model
         self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
         
-        self.qkv = nn.Linear(d_model, d_model * 3)
-        self.proj = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
-    
+        # Các lớp attention cho từng scale
+        self.attention_heads = nn.ModuleList([
+            nn.MultiheadAttention(
+                embed_dim=d_model,
+                num_heads=n_heads,
+                dropout=dropout,
+                batch_first=True
+            ) for _ in scales
+        ])
+        
+        # Lớp downsample cho các scale lớn hơn 1
+        self.downsamplers = nn.ModuleList([
+            nn.Sequential(
+                nn.AvgPool1d(scale, stride=scale),
+                nn.Linear(d_model // scale, d_model)
+            ) if scale > 1 else nn.Identity()
+            for scale in scales
+        ])
+        
+        # Lớp tổng hợp
+        self.aggregate = nn.Sequential(
+            nn.Linear(d_model * len(scales), d_model),
+            nn.LayerNorm(d_model),
+            nn.Dropout(dropout),
+            nn.GELU()
+        )
+        
     def forward(self, x):
+        """
+        x: [batch_size, seq_len, d_model]
+        """
         B, T, _ = x.shape
-        qkv = self.qkv(x).reshape(B, T, 3, self.n_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
+        outputs = []
         
-        attn = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
-        attn = F.softmax(attn, dim=-1)
-        attn = self.dropout(attn)
+        for scale, attention, downsample in zip(self.scales, self.attention_heads, self.downsamplers):
+            # Xử lý theo từng scale
+            if scale > 1:
+                # Downsample sequence
+                x_down = downsample(x.permute(0, 2, 1)).permute(0, 2, 1)  # [B, T//scale, d_model]
+            else:
+                x_down = x
+                
+            # Self-attention
+            attn_out, _ = attention(x_down, x_down, x_down)
+            
+            # Upsample trở lại độ dài ban đầu nếu cần
+            if scale > 1:
+                attn_out = F.interpolate(attn_out.permute(0, 2, 1), size=T).permute(0, 2, 1)
+            
+            outputs.append(attn_out)
         
-        out = (attn @ v).transpose(1, 2).reshape(B, T, self.d_model)
-        return self.proj(out)
-
-class OptimizedLSTMCNNAttention(nn.Module):
+        # Kết hợp các kết quả từ nhiều scale
+        combined = torch.cat(outputs, dim=-1)
+        return self.aggregate(combined)
+    
+class LSTMAttentionModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
-        cfg = config['model']
-        self.seq_len = cfg['seq_len']
-        self.pred_len = cfg['pred_len']
-        self.d_model = cfg['d_model']
-        
+        model_cfg = config['model']
+        d_model = model_cfg['d_model']
+        enc_in = model_cfg['enc_in']
+        self.pred_len = model_cfg['pred_len']
+        self.out_dim = model_cfg.get('output_dim', 1)
+        self.dropout_rate = model_cfg.get('dropout', 0.3)
+
+        input_dim = enc_in 
+
         # Input projection
         self.input_proj = nn.Sequential(
-            nn.Linear(cfg['enc_in'], self.d_model),
-            LightweightHybridNorm(self.d_model),
-            nn.GELU(),
-            nn.Dropout(cfg['dropout'])
-        )
-        
-        # Temporal processing
-        self.blocks = nn.Sequential(
-            *[EfficientTemporalBlock(self.d_model, 2**i, cfg['dropout']) 
-              for i in range(cfg['e_layers'])]
-        )
-        
-        # Attention
-        self.attn = OptimizedAttention(self.d_model, cfg['n_heads'], cfg['dropout'])
-        
-        # Output
-        self.output_net = nn.Sequential(
-            nn.Linear(self.d_model, self.d_model//2),
-            nn.GELU(),
-            nn.Linear(self.d_model//2, self.pred_len * cfg['c_out']),
+            nn.Linear(input_dim, d_model),
+            nn.LayerNorm(d_model),
+            nn.Dropout(self.dropout_rate),
+            nn.GELU()
         )
 
-    def forward(self, x):
-        # Input: [B, seq_len, enc_in]
-        x = self.input_proj(x)  # [B, seq_len, d_model]
-        x = self.blocks(x)      # [B, seq_len, d_model]
-        x = self.attn(x)        # [B, seq_len, d_model]
+        self.pos_encoder = PositionalEncoding(d_model)
+
+        self.lstm = nn.LSTM(
+            input_size=d_model,
+            hidden_size=d_model,
+            num_layers=2,
+            batch_first=True,
+            dropout=self.dropout_rate
+        )
+
+        self.temporal_attention = MultiScaleTemporalAttention(
+            d_model=d_model,
+            n_heads=config['model'].get('n_heads', 4),
+            dropout=self.dropout_rate,
+            scales=[1, 3, 6]  # scale
+        )
+
+        self.skip_conv = nn.Sequential(
+            nn.Conv1d(d_model, d_model, kernel_size=3, padding=1),
+            nn.LayerNorm([d_model, config['model']['seq_len']]),
+            nn.GELU()
+        )
         
-        # Use last 'pred_len' timesteps for prediction
-        x = x[:, -self.pred_len:, :]  # [B, pred_len, d_model]
-        x = x.mean(dim=1)             # [B, d_model]
+        self.attn_norm = nn.LayerNorm(d_model)
+        self.lstm_norm = nn.LayerNorm(d_model)
+        self.residual_norm = nn.LayerNorm(d_model)
+        self.pool_norm = nn.LayerNorm(d_model)
         
-        x = self.output_net(x)        # [B, pred_len * c_out]
-        return x.view(x.size(0), self.pred_len, -1)  # [B, pred_len, c_out]
+        # residual connection
+        self.residual = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.Dropout(self.dropout_rate)
+        )
+        
+        self.output_proj = nn.Sequential(
+            nn.Linear(d_model, d_model*2),
+            nn.LayerNorm(d_model*2),
+            nn.GELU(),
+            nn.Dropout(self.dropout_rate),
+            nn.Linear(d_model*2, self.pred_len * self.out_dim)
+        )
+
+    def attention_weighted_pooling(self, x):
+        attn_weights = F.softmax(x.mean(dim=-1), dim=1)  # [B, T]
+        attn_weights = F.dropout(attn_weights, p=self.dropout_rate, training=self.training)
+        pooled = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)
+        return pooled
+    
+    def forward(self, x, time_features=None):
+        B, T, _ = x.shape
+        
+        # Input projection
+        x = self.input_proj(x)
+        x = self.pos_encoder(x)
+        
+        # LSTM + Norm
+        lstm_out, _ = self.lstm(x)
+        lstm_out = self.lstm_norm(lstm_out)  # add norm
+        
+        # Multi-scale temporal attention
+        attn_out = self.temporal_attention(lstm_out)
+        
+        # Skip connection từ đầu vào LSTM
+        skip = self.skip_conv(lstm_out.permute(0, 2, 1)).permute(0, 2, 1)
+        attn_out = attn_out + skip
+        
+        # Attention pooling 
+        context = self.attention_weighted_pooling(attn_out)
+        
+        # Residual + Norm
+        context = context + self.residual(context)
+        context = self.residual_norm(context)  # add norm
+        
+        # Output
+        out = self.output_proj(context)
+        return out.view(-1, self.pred_len, self.out_dim)
