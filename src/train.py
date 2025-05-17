@@ -1,320 +1,659 @@
-import numpy as np
-import pandas as pd
+import os
 import torch
-from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import RobustScaler, MinMaxScaler
-import ta
-from typing import Optional, Dict, Any, Tuple
 import yaml
-from pathlib import Path
-from sklearn.base import TransformerMixin
+from datetime import datetime
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+import logging
+import glob
+from lstm_attention_model import LSTMAttentionModel
+from rwkv_ts_model import CryptoRWKV_TS
+from lstm_model import LSTMModel
+from cnn_lstm_model import CNNLSTMModel
+from cnn_lstm_attention_model import LSTMCNNAttentionModel
+from lstm_attention_hybrid_model import LSTMAttentionHybrid
+from data_loader import CryptoDataLoader
+from optimize_model import OptimizedLSTMAttentionModel
+from utils import TrainingTracker, EarlyStopper, CompositeLoss, QuantileLoss, ModelEMA
 import torch.nn.functional as F
-import random
+from typing import Dict, Any
+import warnings
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import numpy as np
+import matplotlib.pyplot as plt
+from torch import nn
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import OneCycleLR, LambdaLR
+from torch.optim.swa_utils import AveragedModel, SWALR
+import math
+from sklearn.model_selection import TimeSeriesSplit
 
-class CryptoDataset(Dataset):
-    def __init__(self, 
-                 data_path: str, 
-                 config: Dict[str, Any],
-                 train: bool = True,
-                 scalers: Optional[Dict[str, TransformerMixin]] = None,
-                 test_mode: bool = False):
-        self.seq_len = config['model']['seq_len']
-        self.pred_len = config['model']['pred_len']
-        self.freq = config['data']['freq']
-        self.train = train
-        self.test_mode = test_mode
-        self.current_epoch = 0
-        self.max_epoch = 100 
-        
-        # Tải và tiền xử lý dữ liệu
-        raw_df = self._load_and_clean(data_path)
-        self.data = self._enhance_crypto_features(raw_df, self.freq)
-        
-        # Khởi tạo scalers
-        self.scalers = scalers if scalers is not None else {
-            'price': RobustScaler(),
-            'volume': RobustScaler(),
-            'indicators': MinMaxScaler(feature_range=(-1, 1)),
-            'time': MinMaxScaler()
-        }
-        
-        # Fit và transform dữ liệu
-        if self.train:
-            self._fit_scalers()
-        self._scale_data()
+# Cấu hình logging và suppress warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
-    def _load_and_clean(self, path: str) -> pd.DataFrame:
-        """Tải và làm sạch dữ liệu thô"""
-        df = pd.read_csv(path, float_precision='high')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('training.log')
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class AdaptiveHuberLoss(nn.Module):
+    def __init__(self, initial_delta=1.0):
+        super().__init__()
+        self.delta = nn.Parameter(torch.tensor(initial_delta))
+        self.delta.requires_grad = False
+
+    def forward(self, pred, target):
+        residual = torch.abs(pred - target)
+        condition = residual < self.delta
+        loss = torch.where(
+            condition,
+            0.5 * residual ** 2,
+            self.delta * (residual - 0.5 * self.delta)
+        )
+        return loss.mean()
+    
+    def update_delta(self, new_delta):
+        self.delta.fill_(new_delta)
+
+class TrainConfig:
+    def __init__(self, config_dict: Dict[str, Any]):
+        self.epochs = config_dict['training']['epochs']
+        self.batch_size = config_dict['training']['batch_size']
+        self.lr = config_dict['training']['lr']
+        self.device = torch.device(config_dict['training'].get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
+        self.data_path = config_dict['data']['path']
+        self.log_dir = config_dict['training'].get('log_dir', 'logs')
+        self.checkpoint_dir = config_dict['training'].get('checkpoint_dir', 'checkpoints')
+        self.resume = config_dict['training'].get('resume', None)
+        self.checkpoint_interval = config_dict['training'].get('checkpoint_interval', 5)
+        self.loss_fn = config_dict['training'].get('loss_fn', 'huber')
+        self.huber_delta = config_dict['training'].get('huber_delta', 0.5)
+        self.use_amp = config_dict['training'].get('use_amp', False)
+        self.grad_accum_steps = config_dict['training'].get('grad_accum_steps', 4)
+        self.ema_decay = config_dict['training'].get('ema_decay', 0.999)
+        self.use_swa = config_dict['training'].get('use_swa', False)
+        self.swa_lr = config_dict['training'].get('swa_lr', 0.05)
+        self.swa_start_ratio = config_dict['training'].get('swa_start_ratio', 0.75)
+        self.warmup_epochs = config_dict['training'].get('warmup_epochs', 5)
+
+def get_cosine_schedule_with_warmup(
+    optimizer, 
+    num_warmup_steps, 
+    num_training_steps, 
+    num_cycles=0.5,
+    last_epoch=-1
+):
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(
+            max(1, num_training_steps - num_warmup_steps))
+        return max(
+            0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress))
+        )
+    
+    return LambdaLR(optimizer, lr_lambda, last_epoch)
+
+class SWAWrapper:
+    def __init__(self, model, optimizer, config: TrainConfig):
+        self.swa_model = AveragedModel(model)
+        self.swa_scheduler = SWALR(
+            optimizer, 
+            swa_lr=config.swa_lr,
+            anneal_epochs=5
+        )
+        self.swa_start = int(config.epochs * config.swa_start_ratio)
+        self.swa_activated = False
+
+    def update(self, model, epoch):
+        if epoch >= self.swa_start and not self.swa_activated:
+            logger.info(f"Starting SWA at epoch {epoch+1}")
+            self.swa_activated = True
         
-        # Chuẩn hóa tên cột
-        column_map = {
-            'timestamp': 'timestamp',
-            'Open': 'open',
-            'High': 'high',
-            'Low': 'low',
-            'Close': 'close',
-            'Volume': 'volume'
-        }
-        df = df.rename(columns={k: v for k, v in column_map.items() if k in df.columns})
-        
-        # Xử lý timestamp
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.set_index('timestamp').sort_index()
-        
-        # Xử lý missing values và outliers
-        df['volume'] = df['volume'].replace(0, np.nan)
-        df['volume'] = df['volume'].fillna(df['volume'].rolling(12, min_periods=1).median())
-        
-        # Clip outliers cho các cột quan trọng
-        for col in ['close', 'volume']:
-            q1 = df[col].quantile(0.01)
-            q3 = df[col].quantile(0.99)
-            df[col] = df[col].clip(lower=q1, upper=q3)
+        if self.swa_activated:
+            self.swa_model.update_parameters(model)
+            self.swa_scheduler.step()
+            return True
+        return False
+    
+    def finalize(self, data_loader):
+        if self.swa_activated:
+            logger.info("Finalizing SWA with BN update...")
+            torch.optim.swa_utils.update_bn(data_loader, self.swa_model)
+            return self.swa_model.module
+        return None
+
+def evaluate(model, data_loader, device, loss_fn):
+    model.eval()
+    preds = []
+    targets = []
+    total_loss = 0
+
+    with torch.no_grad():
+        for batch in tqdm(data_loader, desc='Validating', leave=False):
+            x = batch['x'].to(device)
+            y = batch['y'].to(device)
             
-        return df.replace([np.inf, -np.inf], np.nan).ffill().bfill()
-
-    def _enhance_crypto_features(self, df: pd.DataFrame, freq: str) -> pd.DataFrame:
-
-        # Resample nếu tần số khác 5 phút
-        if freq != '5T':
-            ohlc_dict = {
-                'open': 'first',
-                'high': 'max',
-                'low': 'min',
-                'close': 'last',
-                'volume': 'sum'
-            }
-            df = df.resample(freq).apply(ohlc_dict).dropna()
-        
-        # 1. Features giá và lợi nhuận
-        df['log_returns'] = np.log1p(df['close'].pct_change())
-        df['price_ma_ratio'] = df['close'] / df['close'].rolling(24, min_periods=1).mean()
-        df['price_spread'] = (df['high'] - df['low']) / df['close']
-        
-        # 2. Features volume
-        df['volume_zscore'] = (df['volume'] - df['volume'].rolling(24).mean()) / df['volume'].rolling(24).std()
-        df['volume_ma_ratio'] = df['volume'] / df['volume'].rolling(24, min_periods=1).mean()
-        df['liquidity'] = np.log1p(df['volume'] * df['close'])
-        
-        # 3. Technical indicators
-        df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
-        df['macd'] = ta.trend.MACD(df['close'], window_slow=26, window_fast=12).macd_diff()
-        df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
-        df['obv'] = ta.volume.OnBalanceVolumeIndicator(df['close'], df['volume']).on_balance_volume()
-        
-        # 4. Volatility features
-        for window in [6, 12, 24]:  # 30 phút, 1 giờ, 2 giờ
-            df[f'volatility_{window}'] = df['log_returns'].rolling(window).std()
-        
-        # 5. Momentum features
-        df['momentum_3_6'] = df['close'].rolling(3).mean() - df['close'].rolling(6).mean()
-        df['momentum_6_12'] = df['close'].rolling(6).mean() - df['close'].rolling(12).mean()
-        
-        # 6. Time features
-        df['hour'] = df.index.hour
-        df['dayofweek'] = df.index.dayofweek
-        df['is_weekend'] = df['dayofweek'].isin([5, 6]).astype(int)
-        df['is_market_open'] = ((df.index.hour >= 8) & (df.index.hour < 20)).astype(int)
-        
-        # 7. Cyclical encoding
-        df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
-        df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
-        df['dow_sin'] = np.sin(2 * np.pi * df['dayofweek'] / 7)
-        df['dow_cos'] = np.cos(2 * np.pi * df['dayofweek'] / 7)
-        
-        return df.dropna()
-
-    def _fit_scalers(self):
-
-        if not self.train:
-            return
-        
-        price_cols = ['open', 'high', 'low', 'close', 'price_ma_ratio', 'price_spread']
-        volume_cols = ['volume', 'volume_zscore', 'volume_ma_ratio', 'liquidity']
-        indicator_cols = ['rsi', 'macd', 'atr', 'obv', 'log_returns'] + \
-                        [f'volatility_{w}' for w in [6, 12, 24]] + \
-                        ['momentum_3_6', 'momentum_6_12']
-        time_cols = ['hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_weekend', 'is_market_open']
-        
-        self.scalers['price'].fit(self.data[price_cols])
-        self.scalers['volume'].fit(self.data[volume_cols])
-        self.scalers['indicators'].fit(self.data[indicator_cols])
-        self.scalers['time'].fit(self.data[time_cols])
-
-    def _scale_data(self):
-
-        price_cols = ['open', 'high', 'low', 'close', 'price_ma_ratio', 'price_spread']
-        volume_cols = ['volume', 'volume_zscore', 'volume_ma_ratio', 'liquidity']
-        indicator_cols = ['rsi', 'macd', 'atr', 'obv', 'log_returns'] + \
-                        [f'volatility_{w}' for w in [6, 12, 24]] + \
-                        ['momentum_3_6', 'momentum_6_12']
-        time_cols = ['hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_weekend', 'is_market_open']
-        
-        scaled_data = pd.DataFrame(index=self.data.index)
-        scaled_data[price_cols] = self.scalers['price'].transform(self.data[price_cols])
-        scaled_data[volume_cols] = self.scalers['volume'].transform(self.data[volume_cols])
-        scaled_data[indicator_cols] = self.scalers['indicators'].transform(self.data[indicator_cols])
-        scaled_data[time_cols] = self.scalers['time'].transform(self.data[time_cols])
-        
-        self.scaled_data = scaled_data.values
-        self.feature_names = price_cols + volume_cols + indicator_cols + time_cols
-        
-    def __len__(self):
-        return len(self.data) - self.seq_len - self.pred_len + 1
-
-def __getitem__(self, idx: int) -> dict:
-    start_idx = idx
-    end_idx = idx + self.seq_len
-    pred_end_idx = end_idx + self.pred_len
-
-    x = self.scaled_data[start_idx:end_idx].copy()
-    y = self.scaled_data[end_idx:pred_end_idx, self.feature_names.index('close')]
-
-    if self.train and not self.test_mode:
-        # 1. Epoch tracking
-        current_epoch = getattr(self, 'current_epoch', 0)
-        max_epoch = getattr(self, 'max_epoch', 100)
-        progress = min(1.0, current_epoch / (max_epoch * 0.5))
-        noise_level = 0.02 * progress
-        mask_ratio = 0.15 * progress
-
-        # 2. Local Mean Masking
-        if random.random() > 0.5:
-            mask_length = max(1, int(self.seq_len * mask_ratio))
-            mask_start = random.randint(0, max(0, self.seq_len - mask_length - 1))
-            window_start = max(0, mask_start - 5)
-            window_end = min(self.seq_len, mask_start + mask_length + 5)
-            local_mean = np.mean(x[window_start:window_end], axis=0, keepdims=True)
-            x[mask_start:mask_start + mask_length] = local_mean
-
-        # 3. Adaptive Noise (có clip std để tránh NaN)
-        feature_stds = np.clip(np.std(x, axis=0, keepdims=True), 1e-6, None)
-        noise = np.random.normal(0, noise_level * feature_stds, size=x.shape)
-        x = np.clip(x + noise, -3, 3)
-
-        # 4. Smart Scaling
-        if random.random() > 0.5:
-            non_close_features = [i for i, name in enumerate(self.feature_names) if name != 'close']
-            if non_close_features:
-                scale_factors = np.random.uniform(0.9, 1.1, size=(1, len(non_close_features)))
-                x[:, non_close_features] *= scale_factors
-
-        # 5. Time Warping (F.interpolate)
-        if random.random() > 0.7:
-            x_tensor = torch.FloatTensor(x).unsqueeze(0)  # [1, T, D]
-            x_tensor = x_tensor.permute(0, 2, 1)  # [1, D, T]
-            warp_factor = random.uniform(0.8, 1.2)
-            x_tensor = F.interpolate(x_tensor, scale_factor=warp_factor, mode='linear', align_corners=False)
-            x_tensor = x_tensor.permute(0, 2, 1).squeeze(0)  # [new_T, D]
-            x = x_tensor.numpy()
-            # Pad hoặc cắt lại đúng self.seq_len
-            if x.shape[0] >= self.seq_len:
-                x = x[:self.seq_len]
-            else:
-                pad_len = self.seq_len - x.shape[0]
-                x = np.pad(x, ((0, pad_len), (0, 0)), mode='edge')
-
-        # 6. Feature Dropout
-        if random.random() > 0.5:
-            drop_mask = (np.random.rand(x.shape[1]) > 0.1).astype(np.float32)  # numpy version
-            x *= drop_mask  # broadcasted multiply
-
-    return {
-        'x': torch.FloatTensor(x),
-        'y': torch.FloatTensor(y).unsqueeze(-1)
-    }
+            with torch.cuda.amp.autocast():
+                pred = model(x)
+                loss = loss_fn(pred, y)
+                total_loss += loss.item()
                 
-    def set_epoch(self, epoch, max_epoch):
-        self.current_epoch = epoch
-        self.max_epoch = max_epoch
-        
-    @classmethod
-    def from_cassandra_rows(cls, rows: list, config: Dict[str, Any], scalers: Optional[Dict] = None):
-        """Tạo dataset từ dữ liệu real-time"""
-        data = {
-            'timestamp': [row.timestamp for row in rows],
-            'open': [float(row.open) for row in rows],
-            'high': [float(row.high) for row in rows],
-            'low': [float(row.low) for row in rows],
-            'close': [float(row.close) for row in rows],
-            'volume': [float(row.volume) for row in rows]
-        }
-        df = pd.DataFrame(data)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.set_index('timestamp').sort_index()
-        
-        instance = cls.__new__(cls)
-        instance.config = config
-        instance.seq_len = config['model']['seq_len']
-        instance.pred_len = config['model']['pred_len']
-        instance.freq = config['data']['freq']
-        instance.train = False
-        instance.test_mode = True
-        
-        instance.data = instance._enhance_crypto_features(df, instance.freq)
-        instance.scalers = scalers if scalers else {
-            'price': RobustScaler(),
-            'volume': RobustScaler(),
-            'indicators': MinMaxScaler(feature_range=(-1, 1)),
-            'time': MinMaxScaler()
-        }
-        instance._fit_scalers()
-        instance._scale_data()
-        
-        return instance
+                preds.append(pred.cpu().numpy().reshape(-1))
+                targets.append(y.cpu().numpy().reshape(-1))
 
-class CryptoDataLoader:
-    def __init__(self, config_path: str = None, data_path: Optional[str] = None):
-        config_path = config_path or str(Path(__file__).parent.parent / "configs/train_config.yaml")
+    preds = np.concatenate(preds)
+    targets = np.concatenate(targets)
+
+    metrics = {
+        'loss': total_loss / len(data_loader),
+        'mse': mean_squared_error(targets, preds),
+        'mae': mean_absolute_error(targets, preds),
+        'rmse': np.sqrt(mean_squared_error(targets, preds)),
+        'smape': 100 * np.mean(2.0 * np.abs(preds - targets) / (np.abs(preds) + np.abs(targets) + 1e-8)),
+        'r2': r2_score(targets, preds)
+    }
+    
+    if len(preds) > 1:
+        pred_directions = np.sign(preds[1:] - preds[:-1])
+        true_directions = np.sign(targets[1:] - targets[:-1])
+        metrics['direction_acc'] = np.mean(pred_directions == true_directions)
+    
+    print(f"[Eval] Loss: {metrics['loss']:.4f} | MSE: {metrics['mse']:.4f} | "
+          f"MAE: {metrics['mae']:.4f} | SMAPE: {metrics['smape']:.2f}% | "
+          f"R2: {metrics['r2']:.4f} | Direction Acc: {metrics.get('direction_acc', 0):.2%}")
+    
+    return metrics['loss']
+
+def find_latest_checkpoint(checkpoint_dir):
+    checkpoints = glob.glob(os.path.join(checkpoint_dir, '*/epoch_*.pt'))
+    if not checkpoints:
+        return None
+    return max(checkpoints, key=os.path.getctime)
+
+def load_checkpoint(model, optimizer, scheduler, checkpoint_path, device):
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    if scheduler and 'scheduler_state_dict' in checkpoint:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    
+    return {
+        'epoch': checkpoint['epoch'],
+        'best_loss': checkpoint.get('best_loss', float('inf')),
+        'val_loss': checkpoint.get('val_loss', float('inf'))
+    }
+
+def save_checkpoint(state, filename):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    torch.save(state, filename)
+    logger.info(f"Checkpoint saved to {filename}")
+    
+def train(config_path: str = 'configs/train_config.yaml'):
+    try:
+        # 1. Load config
         with open(config_path) as f:
-            self.config = yaml.safe_load(f)
-        
-        if data_path:
-            self.config['data']['path'] = data_path
+            config_dict = yaml.safe_load(f)
+        config = TrainConfig(config_dict)
+
+        # 2. Khởi tạo hệ thống
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        tracker = TrainingTracker(config_dict)
+        stopper = EarlyStopper(config_dict)
+        scaler = torch.cuda.amp.GradScaler(enabled=config.use_amp)
+
+        # 3. Chuẩn bị dữ liệu
+        logger.info("Loading data...")
+        data_loader = CryptoDataLoader(config_path=config_path)
+        train_loader = data_loader.train_loader
+        val_loader = data_loader.test_loader
+
+        # 4. Khởi tạo model
+        model_type = config_dict['model'].get('model_type', 'lstm').lower()
+        if model_type == 'lstm_attention':
+            model = LSTMAttentionModel(config_dict).to(config.device)
+        elif model_type == 'optimize':
+            model = OptimizedLSTMAttentionModel(config_dict).to(config.device)
+        elif model_type == 'cnn_lstm':
+            model = CNNLSTMModel(config_dict).to(config.device)
+        elif model_type == 'cnn_lstm_attention':
+            model = LSTMCNNAttentionModel(config_dict).to(config.device)
+        elif model_type == 'lstm_hybridattention':
+            model = LSTMAttentionHybrid(config_dict).to(config.device)
+        else:
+            model = LSTMModel(config_dict).to(config.device)
+        logger.info(f"Using model: {model_type}")
+
+        # 5. Khởi tạo loss function
+        if config.loss_fn.lower() == "huber":
+            loss_fn = AdaptiveHuberLoss(initial_delta=config.huber_delta)
+            logger.info(f"Using HuberLoss with initial delta={config.huber_delta}")
             
-        # Load full dataset
-        full_data = CryptoDataset(
-            data_path=self.config['data']['path'],
-            config=self.config,
-            train=True
+            with torch.no_grad():
+                sample = next(iter(train_loader))
+                pred = model(sample['x'].to(config.device))
+                errors = torch.abs(pred - sample['y'].to(config.device))
+                delta = torch.quantile(errors, 0.8).item()
+                loss_fn.update_delta(delta)
+                logger.info(f"Auto-adjusted delta to: {delta:.4f}")
+        else:
+            loss_fn = CompositeLoss(
+                losses=[nn.MSELoss(), QuantileLoss(quantiles=[0.1, 0.5, 0.9])],
+                weights=[0.7, 0.3]
+            )
+            logger.info("Using CompositeLoss (MSE + Quantile)")
+
+        # 6. Tối ưu hóa
+        optimizer = AdamW(
+            model.parameters(),
+            lr=config.lr,
+            betas=(0.9, 0.999),
+            weight_decay=1e-3
         )
         
-        # Chia dữ liệu theo thời gian 
-        split_idx = int(len(full_data) * self.config['data']['train_ratio'])
-        train_idx = np.arange(split_idx)
-        test_idx = np.arange(split_idx, len(full_data))
+        # 7. Thiết lập scheduler
+        total_steps = len(train_loader) * config.epochs
+        warmup_steps = len(train_loader) * config.warmup_epochs
         
-        self.train_data = SubsetWithAttributes(full_data, train_idx)
-        self.test_data = SubsetWithAttributes(full_data, test_idx)
+        if config.use_swa:
+            scheduler = get_cosine_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=warmup_steps,
+                num_training_steps=total_steps,
+                num_cycles=0.5
+            )
+            swa = SWAWrapper(model, optimizer, config)
+        else:
+            scheduler = OneCycleLR(
+                optimizer,
+                max_lr=config.lr*10,
+                steps_per_epoch=len(train_loader),
+                epochs=config.epochs,
+                pct_start=0.3
+            )
+            swa = None
+
+        # 8. Resume training nếu có
+        start_epoch = 0
+        best_loss = float('inf')
+        checkpoint_path = None
+        if config.resume == 'auto':
+            checkpoint_path = find_latest_checkpoint(config.checkpoint_dir)
+        elif config.resume:
+            checkpoint_path = config.resume
         
-        # Lưu scalers và feature names
-        self.scalers = full_data.scalers
-        self.feature_names = full_data.feature_names
+        if checkpoint_path:
+            checkpoint = torch.load(checkpoint_path, map_location=config.device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if 'scheduler_state_dict' in checkpoint:
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
+            best_loss = checkpoint.get('best_loss', float('inf'))
+            logger.info(f"Resumed training from epoch {start_epoch}")
+
+        # 9. Vòng lặp training
+        train_losses = []
+        val_losses = []
         
-        # Tạo data loaders
-        self.batch_size = self.config['training']['batch_size']
-        self.train_loader = self._create_loader(self.train_data, shuffle=True)
-        self.test_loader = self._create_loader(self.test_data, shuffle=False)
+        for epoch in range(start_epoch, config.epochs):
+            train_loader.dataset.set_epoch(epoch, config.epochs)
+            model.train()
+            epoch_loss = 0
+            optimizer.zero_grad()
+            
+            # Training phase với gradient accumulation
+            with tqdm(train_loader, unit="batch", desc=f"Epoch {epoch+1}/{config.epochs}") as tepoch:
+                for i, batch in enumerate(tepoch):
+                    x = batch['x'].to(config.device)
+                    y = batch['y'].to(config.device)
+                    
+                    # Mixed precision forward
+                    with torch.cuda.amp.autocast(enabled=config.use_amp):
+                        pred = model(x)
+                        loss = loss_fn(pred, y) / config.grad_accum_steps
+                    
+                    # Backward với gradient scaling
+                    scaler.scale(loss).backward()
+                    
+                    if (i + 1) % config.grad_accum_steps == 0 or (i + 1) == len(train_loader):
+                        # Gradient clipping
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(
+                            model.parameters(),
+                            max_norm= 1.0
+                        )
+                        
+                        # Cập nhật weights
+                        scaler.step(optimizer)
+                        scaler.update()
+                        optimizer.zero_grad()
+                        scheduler.step()
+                    
+                    epoch_loss += loss.item() * config.grad_accum_steps
+                    tepoch.set_postfix(loss=loss.item() * config.grad_accum_steps)
+
+            # Validation phase
+            avg_train_loss = epoch_loss / len(train_loader)
+            val_loss = evaluate(model, val_loader, config.device, loss_fn)
+            
+            train_losses.append(avg_train_loss)
+            val_losses.append(val_loss)
+
+            # Cập nhật SWA nếu được kích hoạt
+            if config.use_swa:
+                swa.update(model, epoch)
+
+            # Cập nhật delta cho Huber Loss
+            if isinstance(loss_fn, AdaptiveHuberLoss):
+                with torch.no_grad():
+                    preds = model(torch.cat([b['x'] for b in train_loader], dim=0).to(config.device))
+                    targets = torch.cat([b['y'] for b in train_loader], dim=0).to(config.device)
+                    errors = torch.abs(preds - targets)
+                    new_delta = torch.quantile(errors, 0.8).item()
+                    loss_fn.update_delta(new_delta)
+                    tracker.log("Loss/delta", new_delta, epoch)
+
+            # Logging
+            tracker.log("Loss/train", avg_train_loss, epoch)
+            tracker.log("Loss/val", val_loss, epoch)
+            tracker.log("Metrics/lr", optimizer.param_groups[0]['lr'], epoch)
+
+            logger.info(f"Epoch {epoch+1}/{config.epochs} | "
+                      f"Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f} | "
+                      f"LR: {optimizer.param_groups[0]['lr']:.2e}")
+
+            # Lưu checkpoint
+            if epoch % config.checkpoint_interval == 0 or val_loss < best_loss:
+                if val_loss < best_loss:
+                    best_loss = val_loss
+                    prefix = "best_"
+                else:
+                    prefix = ""
+                
+                checkpoint_path = f"{config.checkpoint_dir}/{timestamp}/{prefix}epoch_{epoch}.pt"
+                save_checkpoint({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'loss': avg_train_loss,
+                    'val_loss': val_loss,
+                    'best_loss': best_loss,
+                    'config': config_dict
+                }, checkpoint_path)
+
+            # Early stopping
+            if stopper.check(val_loss):
+                logger.info(f"Early stopping triggered at epoch {epoch+1}")
+                break
+
+        # Finalize SWA
+        if config.use_swa:
+            final_model = swa.finalize(train_loader)
+            if final_model is not None:
+                final_val_loss = evaluate(final_model, val_loader, config.device, loss_fn)
+                logger.info(f"Final SWA Val Loss: {final_val_loss:.4f}")
+                torch.save(final_model.state_dict(), f"final_swa_model_{timestamp}.pt")
+        else:
+            torch.save(model.state_dict(), f"final_model_{timestamp}.pt")
+
+        # Visualize kết quả
+        plt.figure(figsize=(10, 6))
+        plt.plot(train_losses, label='Training Loss', color='blue')
+        plt.plot(val_losses, label='Validation Loss', color='red')
+        plt.xlabel('Epochs')
+        plt.ylabel('Loss')
+        plt.title('Learning Curve')
+        plt.legend()
+        plt.grid(True)
+        plt.savefig('learning_curve.png')
+        plt.show()
+
+    except Exception as e:
+        logger.error(f"Training failed: {str(e)}", exc_info=True)
+        raise
+    finally:
+        tracker.close()
+        logger.info("Training completed")
+
+if __name__ == "__main__":
+    train()
     
-    def _create_loader(self, dataset, shuffle: bool) -> DataLoader:
-        return DataLoader(
-            dataset,
-            batch_size=self.batch_size,
-            shuffle=shuffle,
-            num_workers=4, 
-            pin_memory=torch.cuda.is_available(),
-            persistent_workers=True,
-            drop_last=True
-        )
+# using ema model    
+# def train(config_path: str = 'configs/train_config.yaml'):
+#     try:
+#         # 1. Load config
+#         with open(config_path) as f:
+#             config_dict = yaml.safe_load(f)
+#         config = TrainConfig(config_dict)
+
+#         # 2. Khởi tạo hệ thống
+#         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+#         tracker = TrainingTracker(config_dict)
+#         stopper = EarlyStopper(config_dict)
+#         scaler = torch.cuda.amp.GradScaler(enabled=config.use_amp)
+
+#         # 3. Chuẩn bị dữ liệu
+#         logger.info("Loading data...")
+#         data_loader = CryptoDataLoader(config_path=config_path)
+#         train_loader = data_loader.train_loader
+#         val_loader = data_loader.test_loader
+
+#         # 4. Khởi tạo model
+#         model_type = config_dict['model'].get('model_type', 'lstm').lower()
+#         if model_type == 'lstm_attention':
+#             model = LSTMAttentionModel(config_dict).to(config.device)
+#         elif model_type == 'optimize':
+#             model = OptimizedLSTMCNNAttention(config_dict).to(config.device)
+#         elif model_type == 'cnn_lstm':
+#             model = CNNLSTMModel(config_dict).to(config.device)
+#         elif model_type == 'cnn_lstm_attention':
+#             model = LSTMCNNAttentionModel(config_dict).to(config.device)
+#         elif model_type == 'lstm_hybridattention':
+#             model = LSTMAttentionHybrid(config_dict).to(config.device)
+#         else:
+#             model = LSTMModel(config_dict).to(config.device)
+#         logger.info(f"Using model: {model_type}")
+
+#         # 5. Khởi tạo loss function
+#         if config.loss_fn.lower() == "huber":
+#             loss_fn = AdaptiveHuberLoss(initial_delta=config.huber_delta)
+#             logger.info(f"Using HuberLoss with initial delta={config.huber_delta}")
+            
+#             with torch.no_grad():
+#                 sample = next(iter(train_loader))
+#                 pred = model(sample['x'].to(config.device))
+#                 errors = torch.abs(pred - sample['y'].to(config.device))
+#                 delta = torch.quantile(errors, 0.8).item()
+#                 loss_fn.update_delta(delta)
+#                 logger.info(f"Auto-adjusted delta to: {delta:.4f}")
+#         else:
+#             loss_fn = CompositeLoss(
+#                 losses=[nn.MSELoss(), QuantileLoss(quantiles=[0.1, 0.5, 0.9])],
+#                 weights=[0.7, 0.3]
+#             )
+#             logger.info("Using CompositeLoss (MSE + Quantile)")
+
+#         # 6. Tối ưu hóa
+#         optimizer = AdamW(
+#             model.parameters(),
+#             lr=config.lr,
+#             betas=(0.9, 0.999),
+#             weight_decay=1e-4
+#         )
         
-class SubsetWithAttributes(torch.utils.data.Subset):
-    def __init__(self, dataset, indices):
-        super().__init__(dataset, indices)
+#         scheduler = OneCycleLR(
+#             optimizer,
+#             max_lr=config.lr*10,
+#             steps_per_epoch=len(train_loader),
+#             epochs=config.epochs,
+#             pct_start=0.3,
+#             div_factor=25,
+#             final_div_factor=100
+#         )
+
+#         # 7. Khởi tạo EMA
+#         ema = ModelEMA(model, decay=config.ema_decay)
+
+#         # 8. Resume training nếu có
+#         start_epoch = 0
+#         best_loss = float('inf')
+#         checkpoint_path = None
+#         if config.resume == 'auto':
+#             checkpoint_path = find_latest_checkpoint(config.checkpoint_dir)
+#         elif config.resume:
+#             checkpoint_path = config.resume
         
-        for attr in dir(dataset):
-            if not attr.startswith('_') and attr != 'indices':
-                setattr(self, attr, getattr(dataset, attr))
-    
-    def set_epoch(self, epoch, max_epoch):
-        self.dataset.set_epoch(epoch, max_epoch)
+#         if checkpoint_path:
+#             checkpoint = torch.load(checkpoint_path, map_location=config.device)
+#             model.load_state_dict(checkpoint['model_state_dict'])
+#             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+#             if 'scheduler_state_dict' in checkpoint:
+#                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+#             start_epoch = checkpoint['epoch'] + 1
+#             best_loss = checkpoint.get('best_loss', float('inf'))
+#             logger.info(f"Resumed training from epoch {start_epoch}")
+
+#         # 9. Vòng lặp training
+#         train_losses = []
+#         val_losses = []
+        
+#         for epoch in range(start_epoch, config.epochs):
+#             train_loader.dataset.set_epoch(epoch, config.epochs)
+#             model.train()
+#             epoch_loss = 0
+#             optimizer.zero_grad()
+            
+#             # 9.1 Training phase với gradient accumulation
+#             with tqdm(train_loader, unit="batch", desc=f"Epoch {epoch+1}/{config.epochs}") as tepoch:
+#                 for i, batch in enumerate(tepoch):
+#                     x = batch['x'].to(config.device)
+#                     y = batch['y'].to(config.device)
+                    
+#                     # Mixed precision forward
+#                     with torch.cuda.amp.autocast(enabled=config.use_amp):
+#                         pred = model(x)
+                        
+#                         # Ensure target matches prediction length
+#                         if y.shape[1] > pred.shape[1]:
+#                             y = y[:, :pred.shape[1], :]  # Truncate target if longer
+#                         elif y.shape[1] < pred.shape[1]:
+#                             # Pad target if shorter (though this shouldn't happen if data is prepared correctly)
+#                             pad_size = pred.shape[1] - y.shape[1]
+#                             y = F.pad(y, (0, 0, 0, pad_size), "constant", 0)
+                        
+#                         loss = loss_fn(pred, y) / config.grad_accum_steps
+                    
+#                     # Backward với gradient scaling
+#                     scaler.scale(loss).backward()
+                    
+#                     if (i + 1) % config.grad_accum_steps == 0 or (i + 1) == len(train_loader):
+#                         # Gradient clipping
+#                         scaler.unscale_(optimizer)
+#                         torch.nn.utils.clip_grad_norm_(
+#                             model.parameters(),
+#                             max_norm=0.5 * (1 + epoch/config.epochs)
+#                         )
+                        
+#                         # Cập nhật weights
+#                         scaler.step(optimizer)
+#                         scaler.update()
+#                         optimizer.zero_grad()
+#                         scheduler.step()
+                        
+#                         # Cập nhật EMA
+#                         ema.update(model)
+                    
+#                     epoch_loss += loss.item() * config.grad_accum_steps
+#                     tepoch.set_postfix(loss=loss.item() * config.grad_accum_steps)
+
+#             # 9.2 Evaluation phase
+#             avg_train_loss = epoch_loss / len(train_loader)
+            
+#             # Validate với cả model và EMA model
+#             val_loss = evaluate(model, val_loader, config.device, loss_fn)
+#             ema_val_loss = evaluate(ema.module, val_loader, config.device, loss_fn)
+            
+#             # Chọn model tốt hơn
+#             if ema_val_loss < val_loss:
+#                 model.load_state_dict(ema.module.state_dict())
+#                 val_loss = ema_val_loss
+#                 logger.info("Using EMA model for better validation loss")
+            
+#             train_losses.append(avg_train_loss)
+#             val_losses.append(val_loss)
+
+#             # 9.3 Cập nhật delta cho Huber Loss
+#             if isinstance(loss_fn, AdaptiveHuberLoss):
+#                 with torch.no_grad():
+#                     preds = model(torch.cat([b['x'] for b in train_loader], dim=0).to(config.device))
+#                     targets = torch.cat([b['y'] for b in train_loader], dim=0).to(config.device)
+#                     errors = torch.abs(preds - targets)
+#                     new_delta = torch.quantile(errors, 0.8).item()
+#                     loss_fn.update_delta(new_delta)
+#                     tracker.log("Loss/delta", new_delta, epoch)
+
+#             # 9.4 Logging
+#             tracker.log("Loss/train", avg_train_loss, epoch)
+#             tracker.log("Loss/val", val_loss, epoch)
+#             tracker.log("Metrics/lr", optimizer.param_groups[0]['lr'], epoch)
+
+#             logger.info(f"Epoch {epoch+1}/{config.epochs} | "
+#                       f"Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f} | "
+#                       f"LR: {optimizer.param_groups[0]['lr']:.2e}")
+
+#             # 9.5 Lưu checkpoint
+#             if epoch % config.checkpoint_interval == 0 or val_loss < best_loss:
+#                 if val_loss < best_loss:
+#                     best_loss = val_loss
+#                     prefix = "best_"
+#                 else:
+#                     prefix = ""
+                
+#                 checkpoint_path = f"{config.checkpoint_dir}/{timestamp}/{prefix}epoch_{epoch}.pt"
+#                 save_checkpoint({
+#                     'epoch': epoch,
+#                     'model_state_dict': model.state_dict(),
+#                     'optimizer_state_dict': optimizer.state_dict(),
+#                     'scheduler_state_dict': scheduler.state_dict(),
+#                     'loss': avg_train_loss,
+#                     'val_loss': val_loss,
+#                     'best_loss': best_loss,
+#                     'config': config_dict
+#                 }, checkpoint_path)
+
+#             # 9.6 Early stopping
+#             if stopper.check(val_loss):
+#                 logger.info(f"Early stopping triggered at epoch {epoch+1}")
+#                 break
+
+#         # 10. Visualize kết quả
+#         plt.figure(figsize=(10, 6))
+#         plt.plot(train_losses, label='Training Loss', color='blue')
+#         plt.plot(val_losses, label='Validation Loss', color='red')
+#         plt.xlabel('Epochs')
+#         plt.ylabel('Loss')
+#         plt.title('Learning Curve')
+#         plt.legend()
+#         plt.grid(True)
+#         plt.savefig('learning_curve.png')
+#         plt.show()
+
+#     except Exception as e:
+#         logger.error(f"Training failed: {str(e)}", exc_info=True)
+#         raise
+#     finally:
+#         tracker.close()
+#         logger.info("Training completed")
