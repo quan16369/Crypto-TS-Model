@@ -6,6 +6,7 @@ from torch.utils.tensorboard import SummaryWriter
 from typing import Dict, Any, Optional, Union, Tuple 
 import numpy as np 
 from torch import nn
+import torch.nn.functional as F
 
 def seed_everything(seed: int = 42):
     """Cố định seed cho tất cả thư viện"""
@@ -49,27 +50,6 @@ class EarlyStopper:
         else:
             self.counter += 1
         return self.counter >= self.patience
-    
-# label smoothing
-def label_smooth_loss(pred, target, smoothing=0.1):
-    n_class = pred.size(-1)
-    one_hot = torch.full_like(pred, fill_value=smoothing/(n_class-1))
-    one_hot.scatter_(-1, target.unsqueeze(-1), 1.0-smoothing)
-    return F.kl_div(F.log_softmax(pred, dim=-1), one_hot, reduction='batchmean')
-
-# Mixup augmentation
-def mixup_data(x, y, alpha=0.4):
-    if alpha > 0:
-        lam = np.random.beta(alpha, alpha)
-    else:
-        lam = 1
-    
-    batch_size = x.size()[0]
-    index = torch.randperm(batch_size)
-    
-    mixed_x = lam * x + (1 - lam) * x[index, :]
-    mixed_y = lam * y + (1 - lam) * y[index]
-    return mixed_x, mixed_y
 
 class CompositeLoss(nn.Module):
     """combine many loss function with weight"""
@@ -135,3 +115,32 @@ class ModelEMA:
     @property
     def module(self):
         return self.model
+
+class DirectionLoss(nn.Module):
+    def __init__(self, alpha=0.3):
+        super().__init__()
+        self.alpha = alpha
+        self.mse = nn.MSELoss()
+        
+    def forward(self, pred, target):
+        mse_loss = self.mse(pred, target)
+        
+        pred_directions = torch.sign(pred[:, 1:] - pred[:, :-1])
+        true_directions = torch.sign(target[:, 1:] - target[:, :-1])
+        direction_loss = F.binary_cross_entropy_with_logits(
+            pred_directions.float(), 
+            (true_directions > 0).float()
+        )
+        
+        return (1-self.alpha)*mse_loss + self.alpha*direction_loss
+    
+class VolatilityWeightedLoss(nn.Module):
+    def __init__(self, base_loss=nn.HuberLoss(delta=0.5)):
+        super().__init__()
+        self.base_loss = base_loss
+        
+    def forward(self, pred, target):
+        residuals = (pred - target).abs()
+        volatility = residuals.unfold(1, 5, 1).std(dim=-1)
+        weights = 1 / (volatility + 1e-6)
+        return (self.base_loss(pred, target) * weights).mean()
