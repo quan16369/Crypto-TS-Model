@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Dict, Any
 
-class LSTMOnlyModel(nn.Module):
+class LSTMModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         model_cfg = config['model']
