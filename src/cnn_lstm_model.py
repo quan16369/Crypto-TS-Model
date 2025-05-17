@@ -17,12 +17,11 @@ class CNNLSTMModel(nn.Module):
 
         # CNN module
         self.cnn = nn.Sequential(
-            nn.Conv1d(self.input_dim, self.cnn_out_channels, kernel_size=3, padding=1),
+            nn.Conv1d(self.input_dim, self.cnn_out, kernel_size=3, padding=1),
+            nn.BatchNorm1d(self.cnn_out),
             nn.ReLU(),
-            nn.MaxPool1d(kernel_size=2),
-            nn.Dropout(self.dropout)
         )
-
+        
         # LSTM module
         self.lstm = nn.LSTM(
             input_size=self.cnn_out_channels,
@@ -41,10 +40,11 @@ class CNNLSTMModel(nn.Module):
         )
 
     def forward(self, x_enc: torch.Tensor, x_mark_enc=None):
+        # x_enc: [batch, seq_len, input_dim]
         x = x_enc.permute(0, 2, 1)  # [batch, input_dim, seq_len]
-        x = self.cnn(x)             # [batch, cnn_out, seq_len//2]
-        x = x.permute(0, 2, 1)      # [batch, seq_len//2, cnn_out]
-        lstm_out, _ = self.lstm(x)                 # [batch, seq_len//2, lstm_hidden_dim]
-        last_output = lstm_out[:, -1, :]           # [batch, lstm_hidden_dim]
+        x = self.cnn(x)             # [batch, cnn_out_channels, seq_len]
+        x = x.permute(0, 2, 1)      # [batch, seq_len, cnn_out_channels]
+        lstm_out, _ = self.lstm(x)  # [batch, seq_len, lstm_hidden_dim]
+        last_output = lstm_out[:, -1, :]   # Lấy output cuối cùng
         out = self.output_layer(last_output)       # [batch, pred_len]
-        return out.unsqueeze(-1)                   # [batch, pred_len, 1]
+        return out.unsqueeze(-1)                    # [batch, pred_len, 1]
