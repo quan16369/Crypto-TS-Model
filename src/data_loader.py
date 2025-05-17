@@ -163,67 +163,67 @@ class CryptoDataset(Dataset):
     def __len__(self):
         return len(self.data) - self.seq_len - self.pred_len + 1
 
-def __getitem__(self, idx: int) -> dict:
-    start_idx = idx
-    end_idx = idx + self.seq_len
-    pred_end_idx = end_idx + self.pred_len
+    def __getitem__(self, idx: int) -> dict:
+        start_idx = idx
+        end_idx = idx + self.seq_len
+        pred_end_idx = end_idx + self.pred_len
 
-    x = self.scaled_data[start_idx:end_idx].copy()
-    y = self.scaled_data[end_idx:pred_end_idx, self.feature_names.index('close')]
+        x = self.scaled_data[start_idx:end_idx].copy()
+        y = self.scaled_data[end_idx:pred_end_idx, self.feature_names.index('close')]
 
-    if self.train and not self.test_mode:
-        # 1. Epoch tracking
-        current_epoch = getattr(self, 'current_epoch', 0)
-        max_epoch = getattr(self, 'max_epoch', 100)
-        progress = min(1.0, current_epoch / (max_epoch * 0.5))
-        noise_level = 0.02 * progress
-        mask_ratio = 0.15 * progress
+        if self.train and not self.test_mode:
+            # 1. Epoch tracking
+            current_epoch = getattr(self, 'current_epoch', 0)
+            max_epoch = getattr(self, 'max_epoch', 100)
+            progress = min(1.0, current_epoch / (max_epoch * 0.5))
+            noise_level = 0.02 * progress
+            mask_ratio = 0.15 * progress
 
-        # 2. Local Mean Masking
-        if random.random() > 0.5:
-            mask_length = max(1, int(self.seq_len * mask_ratio))
-            mask_start = random.randint(0, max(0, self.seq_len - mask_length - 1))
-            window_start = max(0, mask_start - 5)
-            window_end = min(self.seq_len, mask_start + mask_length + 5)
-            local_mean = np.mean(x[window_start:window_end], axis=0, keepdims=True)
-            x[mask_start:mask_start + mask_length] = local_mean
+            # 2. Local Mean Masking
+            if random.random() > 0.5:
+                mask_length = max(1, int(self.seq_len * mask_ratio))
+                mask_start = random.randint(0, max(0, self.seq_len - mask_length - 1))
+                window_start = max(0, mask_start - 5)
+                window_end = min(self.seq_len, mask_start + mask_length + 5)
+                local_mean = np.mean(x[window_start:window_end], axis=0, keepdims=True)
+                x[mask_start:mask_start + mask_length] = local_mean
 
-        # 3. Adaptive Noise (có clip std để tránh NaN)
-        feature_stds = np.clip(np.std(x, axis=0, keepdims=True), 1e-6, None)
-        noise = np.random.normal(0, noise_level * feature_stds, size=x.shape)
-        x = np.clip(x + noise, -3, 3)
+            # 3. Adaptive Noise (có clip std để tránh NaN)
+            feature_stds = np.clip(np.std(x, axis=0, keepdims=True), 1e-6, None)
+            noise = np.random.normal(0, noise_level * feature_stds, size=x.shape)
+            x = np.clip(x + noise, -3, 3)
 
-        # 4. Smart Scaling
-        if random.random() > 0.5:
-            non_close_features = [i for i, name in enumerate(self.feature_names) if name != 'close']
-            if non_close_features:
-                scale_factors = np.random.uniform(0.9, 1.1, size=(1, len(non_close_features)))
-                x[:, non_close_features] *= scale_factors
+            # 4. Smart Scaling
+            if random.random() > 0.5:
+                non_close_features = [i for i, name in enumerate(self.feature_names) if name != 'close']
+                if non_close_features:
+                    scale_factors = np.random.uniform(0.9, 1.1, size=(1, len(non_close_features)))
+                    x[:, non_close_features] *= scale_factors
 
-        # 5. Time Warping (F.interpolate)
-        if random.random() > 0.7:
-            x_tensor = torch.FloatTensor(x).unsqueeze(0)  # [1, T, D]
-            x_tensor = x_tensor.permute(0, 2, 1)  # [1, D, T]
-            warp_factor = random.uniform(0.8, 1.2)
-            x_tensor = F.interpolate(x_tensor, scale_factor=warp_factor, mode='linear', align_corners=False)
-            x_tensor = x_tensor.permute(0, 2, 1).squeeze(0)  # [new_T, D]
-            x = x_tensor.numpy()
-            # Pad hoặc cắt lại đúng self.seq_len
-            if x.shape[0] >= self.seq_len:
-                x = x[:self.seq_len]
-            else:
-                pad_len = self.seq_len - x.shape[0]
-                x = np.pad(x, ((0, pad_len), (0, 0)), mode='edge')
+            # 5. Time Warping (F.interpolate)
+            if random.random() > 0.7:
+                x_tensor = torch.FloatTensor(x).unsqueeze(0)  # [1, T, D]
+                x_tensor = x_tensor.permute(0, 2, 1)  # [1, D, T]
+                warp_factor = random.uniform(0.8, 1.2)
+                x_tensor = F.interpolate(x_tensor, scale_factor=warp_factor, mode='linear', align_corners=False)
+                x_tensor = x_tensor.permute(0, 2, 1).squeeze(0)  # [new_T, D]
+                x = x_tensor.numpy()
+                # Pad hoặc cắt lại đúng self.seq_len
+                if x.shape[0] >= self.seq_len:
+                    x = x[:self.seq_len]
+                else:
+                    pad_len = self.seq_len - x.shape[0]
+                    x = np.pad(x, ((0, pad_len), (0, 0)), mode='edge')
 
-        # 6. Feature Dropout
-        if random.random() > 0.5:
-            drop_mask = (np.random.rand(x.shape[1]) > 0.1).astype(np.float32)  # numpy version
-            x *= drop_mask  # broadcasted multiply
+            # 6. Feature Dropout
+            if random.random() > 0.5:
+                drop_mask = (np.random.rand(x.shape[1]) > 0.1).astype(np.float32)  # numpy version
+                x *= drop_mask  # broadcasted multiply
 
-    return {
-        'x': torch.FloatTensor(x),
-        'y': torch.FloatTensor(y).unsqueeze(-1)
-    }
+        return {
+            'x': torch.FloatTensor(x),
+            'y': torch.FloatTensor(y).unsqueeze(-1)
+        }
                 
     def set_epoch(self, epoch, max_epoch):
         self.current_epoch = epoch
