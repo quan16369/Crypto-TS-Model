@@ -332,7 +332,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
                         scaler.unscale_(optimizer)
                         torch.nn.utils.clip_grad_norm_(
                             model.parameters(),
-                            max_norm=0.5 * (1 + epoch/config.epochs)
+                            max_norm= 1.0
                         )
                         
                         # Cập nhật weights
