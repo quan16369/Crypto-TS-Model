@@ -10,7 +10,7 @@ from lstm_attention_model import LSTMAttentionModel
 from rwkv_ts_model import CryptoRWKV_TS
 from lstm_model import LSTMModel
 from cnn_lstm_model import CNNLSTMModel
-from cnn_lstm_attention_model import LSTMCNNAttentionModel
+from cnn_lstm_attention_model import CNNLSTMAttentionModel
 from lstm_attention_hybrid_model import LSTMAttentionHybrid
 from data_loader import CryptoDataLoader
 from optimize_model import OptimizedLSTMAttentionModel
@@ -228,7 +228,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
         elif model_type == 'cnn_lstm':
             model = CNNLSTMModel(config_dict).to(config.device)
         elif model_type == 'cnn_lstm_attention':
-            model = LSTMCNNAttentionModel(config_dict).to(config.device)
+            model = CNNLSTMAttentionModel(config_dict).to(config.device)
         elif model_type == 'lstm_hybridattention':
             model = LSTMAttentionHybrid(config_dict).to(config.device)
         else:
