@@ -249,7 +249,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
                 logger.info(f"Auto-adjusted delta to: {delta:.4f}")
         else:
             loss_fn = CompositeLoss(
-                losses=[nn.MSEloss(), DirectionLoss(alpha= 0.3)],
+                losses=[nn.MSELoss(), DirectionLoss(alpha= 0.3)],
                 weights=[1.0, 0.0]
             )
             logger.info("Using CompositeLoss (MSE + Quantile)")
