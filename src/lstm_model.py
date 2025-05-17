@@ -2,48 +2,43 @@ import torch
 import torch.nn as nn
 from typing import Dict, Any
 
-class LSTMModel(nn.Module):
+class LSTMOnlyModel(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
-        self.config = config['model']
-        
-        # 1. Input Projection
+        model_cfg = config['model']
+
+        self.input_dim = model_cfg['enc_in']
+        self.seq_len = model_cfg['seq_len']
+        self.pred_len = model_cfg['pred_len']
+        self.hidden_dim = model_cfg.get('d_model', 128)
+        self.dropout = model_cfg.get('dropout', 0.3)
+
         self.input_net = nn.Sequential(
-            nn.Linear(self.config['enc_in'], self.config['d_model']),
+            nn.Linear(self.input_dim, self.hidden_dim),
             nn.GELU(),
-            nn.LayerNorm(self.config['d_model']),
-            nn.Dropout(self.config.get('dropout', 0.3))
-        )   
-        
-        # 2. LSTM 
-        self.lstm = nn.LSTM(
-            input_size=self.config['d_model'],
-            hidden_size=self.config['d_model'],
-            num_layers=self.config['e_layers'],
-            batch_first=True,
-            dropout=self.config.get('dropout', 0.3) if self.config['e_layers'] > 1 else 0
-        )
-        
-        # 3. Output Network 
-        self.output_net = nn.Sequential(
-            nn.Linear(self.config['d_model'], self.config['d_model']),
-            nn.LayerNorm(self.config['d_model']),
-            nn.SiLU(),
-            nn.Linear(self.config['d_model'], self.config['pred_len']),
+            nn.LayerNorm(self.hidden_dim),
+            nn.Dropout(self.dropout)
         )
 
-    def forward(self, x_enc: torch.Tensor, x_mark_enc=None) -> torch.Tensor:
+        self.lstm = nn.LSTM(
+            input_size=self.hidden_dim,
+            hidden_size=self.hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.output_net = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.LayerNorm(self.hidden_dim),
+            nn.GELU(),
+            nn.Linear(self.hidden_dim, self.pred_len)
+        )
+
+    def forward(self, x_enc: torch.Tensor, x_mark_enc=None):
         batch_size, seq_len, _ = x_enc.shape
-        
-        # Feature projection
-        x = x_enc.reshape(-1, x_enc.size(-1))
-        x = self.input_net(x)
-        x = x.reshape(batch_size, seq_len, -1)
-        
-        # LSTM processing
+        x = self.input_net(x_enc.view(-1, self.input_dim))
+        x = x.view(batch_size, seq_len, -1)
         lstm_out, _ = self.lstm(x)
-        
-        # Get predictions - ensure output matches config['pred_len']
-        pred = self.output_net(lstm_out[:, -1, :])  # [batch_size, pred_len]
-        
-        return pred.unsqueeze(-1)  # [batch_size, pred_len, 1]
+        last_output = lstm_out[:, -1, :]
+        out = self.output_net(last_output)
+        return out.unsqueeze(-1)
