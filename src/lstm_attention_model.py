@@ -30,7 +30,6 @@ class LSTMAttentionModel(nn.Module):
 
         input_dim = enc_in 
 
-        # Input projection
         self.input_proj = nn.Sequential(
             nn.Linear(input_dim, d_model),
             nn.LayerNorm(d_model),
@@ -48,62 +47,50 @@ class LSTMAttentionModel(nn.Module):
             dropout=self.dropout_rate
         )
 
-        self.self_attn = nn.MultiheadAttention(
-            embed_dim=d_model,
-            num_heads=4,
-            dropout=self.dropout_rate,
-            batch_first=True
-        )
+        self.attentions = nn.ModuleList([
+            nn.MultiheadAttention(d_model, num_heads=4, dropout=self.dropout_rate, batch_first=True)
+            for _ in range(3)  
+        ])
         
         self.attn_norm = nn.LayerNorm(d_model)
         self.lstm_norm = nn.LayerNorm(d_model)
         self.residual_norm = nn.LayerNorm(d_model)
-        self.pool_norm = nn.LayerNorm(d_model)
         
-        # residual connection
-        self.residual = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.Dropout(self.dropout_rate)
-        )
-        
+        self.cross_attn = nn.MultiheadAttention(d_model, num_heads=4, dropout=self.dropout_rate, batch_first=True)
+
         self.output_proj = nn.Sequential(
             nn.Linear(d_model, d_model*2),
             nn.LayerNorm(d_model*2),
             nn.GELU(),
             nn.Dropout(self.dropout_rate),
-            nn.Linear(d_model*2, self.pred_len * self.out_dim)
+            nn.Linear(d_model*2, self.out_dim)
         )
 
-    def attention_weighted_pooling(self, x):
-        attn_weights = F.softmax(x.mean(dim=-1), dim=1)  # [B, T]
-        attn_weights = F.dropout(attn_weights, p=self.dropout_rate, training=self.training)
-        pooled = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)
-        return pooled
-    
     def forward(self, x, time_features=None):
         B, T, _ = x.shape
         
-        # Input projection
         x = self.input_proj(x)
         x = self.pos_encoder(x)
         
-        # LSTM + Norm
         lstm_out, _ = self.lstm(x)
-        lstm_out = self.lstm_norm(lstm_out)  # add norm
+        lstm_out = self.lstm_norm(lstm_out)
         
-        # Attention
         mask = torch.triu(torch.ones(T, T), diagonal=1).bool().to(x.device)
-        attn_out, _ = self.self_attn(lstm_out, lstm_out, lstm_out, attn_mask=mask)
-        attn_out = self.attn_norm(lstm_out + attn_out)
+        attn_out = lstm_out
+        for attn_layer in self.attentions:
+            attn_res, _ = attn_layer(attn_out, attn_out, attn_out, attn_mask=mask)
+            attn_out = self.attn_norm(attn_out + attn_res)
         
-        # Pooling + Norm
-        # attn_out = self.pool_norm(attn_out)  # add norm before pooling
-        context = self.attention_weighted_pooling(attn_out)
+        y_query = torch.zeros(B, self.pred_len, attn_out.size(-1), device=x.device)
+        y_query = self.pos_encoder(y_query)
         
-        # Residual + Norm
-        context = context + self.residual(context)
-        context = self.residual_norm(context)  # add norm
+        cross_attn_out, _ = self.cross_attn(y_query, attn_out, attn_out)
+        cross_attn_out = self.residual_norm(y_query + cross_attn_out)
         
-        # Output
-        out = self.output_proj(context)
-        return out.view(-1, self.pred_len, self.out_dim)
+        out = self.output_proj(cross_attn_out)  # (B, pred_len, out_dim)
+        return out
+
+    
+    
+    
+    
