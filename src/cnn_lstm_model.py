@@ -17,9 +17,9 @@ class CNNLSTMModel(nn.Module):
 
         # CNN module
         self.cnn = nn.Sequential(
-            nn.Conv1d(self.input_dim, self.cnn_out, kernel_size=3, padding=1),
-            nn.BatchNorm1d(self.cnn_out),
+            nn.Conv1d(self.input_dim, self.cnn_out_channels, kernel_size=3, padding=1),
             nn.ReLU(),
+            nn.Dropout(self.dropout)
         )
         
         # LSTM module
