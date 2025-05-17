@@ -14,7 +14,7 @@ from cnn_lstm_attention_model import LSTMCNNAttentionModel
 from lstm_attention_hybrid_model import LSTMAttentionHybrid
 from data_loader import CryptoDataLoader
 from optimize_model import OptimizedLSTMAttentionModel
-from utils import TrainingTracker, EarlyStopper, CompositeLoss, QuantileLoss, ModelEMA
+from utils import TrainingTracker, EarlyStopper, CompositeLoss, QuantileLoss, DirectionLoss
 import torch.nn.functional as F
 from typing import Dict, Any
 import warnings
@@ -249,7 +249,7 @@ def train(config_path: str = 'configs/train_config.yaml'):
                 logger.info(f"Auto-adjusted delta to: {delta:.4f}")
         else:
             loss_fn = CompositeLoss(
-                losses=[nn.MSELoss(), QuantileLoss(quantiles=[0.1, 0.5, 0.9])],
+                losses=[nn.HuberLoss(), DirectionLoss(alpha= 0.3)],
                 weights=[0.7, 0.3]
             )
             logger.info("Using CompositeLoss (MSE + Quantile)")
